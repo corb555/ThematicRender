@@ -13,8 +13,6 @@ from ThematicRender.ipc_blocks import BlockPool, DriverBlockView, DriverBlockRef
 
 
 # raster_manager.py
-
-
 @dataclass(frozen=True, slots=True)
 class WindowRead:
     """A possibly-expanded read window and slices to crop back to the requested window."""
@@ -91,12 +89,6 @@ class RasterManager:
     def anchor_src(self) -> rasterio.DatasetReader:
         """The source that defines dimensions, CRS, and Transform for the output."""
         return self.sources[self.anchor_key]
-
-    @property
-    # DEPRECATEED
-    def ZZdem_src(self) -> Optional[rasterio.DatasetReader]:
-        raise DeprecationWarning("deprecated")
-        return self.sources.get(DriverKey.DEM)
 
     def read_window(
             self, window: Window, *, pool_map: Dict["DriverKey", BlockPool], ) -> Dict[

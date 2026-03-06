@@ -128,16 +128,28 @@ class PipelineEngine:
                     write_offset_col=write_offset_col
                 )
 
-                """  for  ctx in  [reader_ctx, worker_ctx, writer_ctx]:
+                # Test safety of CTX pickling
+                for name, ctx in [
+                    ("ReaderContext", reader_ctx),
+                    ("WorkerContext", worker_ctx),
+                    ("WriterContext", writer_ctx),
+                ]:
                     try:
                         pickle.dumps(ctx)
-                        print("✅ multiprocess-safe!")
+                        print(f"✅ {name}: pickling safe!")
                     except Exception as e:
-                        print(f">> Pickling Error: {e}")"""
+                        print(f"❌ {name}: pickling failed -> {e}")
 
                 if self.singlethread:
                     # SINGLE-THREAD MAIN PROCESSING
-                    for seq, window in enumerate(tqdm(win_list, desc="Rendering")):
+                    progress_bar = tqdm(
+                        win_list,
+                        desc="Rendering",
+                        mininterval=30.0,
+                        bar_format='{desc}: {percentage:3.0f}% |{bar}| {elapsed} {remaining}'
+                    )
+
+                    for seq, window in enumerate(progress_bar):
                         try:
                             work_packet = read_task(seq=seq, window=window, ctx=reader_ctx)
                             result_packet = render_task(packet=work_packet, ctx=worker_ctx)

@@ -28,8 +28,6 @@ class FactorEngine:
         self._compiled = []
         from .factor_library import FACTOR_REGISTRY
         for spec in self.specs:
-            print(f"Added function id: '{spec.function_id}'")
-
             fn = FACTOR_REGISTRY.get(spec.function_id)
             if fn is None:
                 raise KeyError(f"Factor function_id '{spec.function_id}' not found.")
