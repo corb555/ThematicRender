@@ -13,7 +13,6 @@ filters, and non-linear signal shaping to simulate natural transitions, geologic
 Thematic Render solves the "Low-Res Data Problem" common in spatial visualization. Through a two-phase processing 
 model, the engine eliminates the "stair-step" artifacts of upscaled data:
 
-
 ##  Key Features
 
 ### 1.  Compositing Pipeline
@@ -155,3 +154,15 @@ Mode**.
 Thematic Render allows a game developer to skip the "Manual Painting" phase of world-building. Instead of 
 hand-painting where the red rocks are in Sedona, they feed in the real-world Lithology data, and the engine 
 produces a **production-ready terrain texture** that looks like it was painted by a concept artist.
+
+## Design
+### Engine Contract (Firewall Architecture):
+Storage (3D): Rasters are stored in Shared Memory as (H, W, Bands) or (B, H, W).
+Compute (2D): render_task act as a firewall. It rehydrates data from SHM and strictly squeezes all single-band inputs and validity masks to 2D (H, W) before calling engines.
+Safety: This prevents the  384  3  384  3 broadcasting bug common in square-tile NumPy processing.
+Output: blend_window transposes the final (H, W, 3) buffer back to (3, H, W) uint8 for the writer. 
+
+### Engine States:
+   Factor Engine: Demand-driven (derives requirements from pipeline). Uses FactorLibrary with a @spatial_factor decorator that manages execution timers and restores 3D shapes.
+   Surface Engine: Manages a "Modifier Chain" (e.g., Mottle) and Samples 1D color ramps using physical meters (elev_m) to preserve precision and negative values.
+   ConfigMgr: A "Fused Truth Store" built at startup. Merges settings.py (logic/specs) with YAML (paths/overrides). Uses get_logic(key), get_spec(key), and path(key) accessors.

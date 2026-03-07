@@ -26,7 +26,7 @@ class FactorEngine:
 
         # Resolve compute callables
         self._compiled = []
-        from .factor_library import FACTOR_REGISTRY
+        from ThematicRender.factor_library import FACTOR_REGISTRY
         for spec in self.specs:
             fn = FACTOR_REGISTRY.get(spec.function_id)
             if fn is None:
@@ -67,7 +67,7 @@ class FactorEngine:
             try:
                 # --- CALL LIBRARY (2D COMPUTE) ---
                 # The library function 'fn'  operates in a pure 2D environment
-                override_target = self.cfg.get("override_factor")
+                override_target = self.cfg.get_global("override_factor")
                 if override_target == spec.name:
                     res = np.ones((target_h, target_w, 1), dtype="float32")
                 else:
@@ -131,15 +131,6 @@ class FactorEngine:
             msg += f" | valid_mean={v_mean:.3f} valid_zeros={v_zeros:.3f}"
 
         print_once(f"driver_stats_{name}", msg)
-
-        # Optional “strict” tripwires (enable via config)
-        if self.cfg.get("strict_dem_checks") and name.upper() == "DEM":
-            # If DEM got accidentally cast to uint8, you'll usually see max <= 255
-            if np.issubdtype(arr.dtype, np.integer) and a_max <= 255.0:
-                raise ValueError(
-                    "❌ DEM looks like an 8-bit image (uint8-like). "
-                    "Likely driver_spec dtype is wrong for DEM; expected float32 elevations."
-                )
 
 
 class FactorContext(Protocol):

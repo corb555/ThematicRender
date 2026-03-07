@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from dataclasses import field
-from typing import FrozenSet, Dict, Final, Any
+
+#setttings.py
+from typing import Dict, Final, Any
 
 import numpy as np
 
-from ThematicRender.keys import (SurfaceKey, DriverKey, FactorKey, FileKey, DriverSpec, SurfaceSpec, \
-                                 _BlendSpec, FactorSpec, _zeros, _ones, NoiseProfile,
-                                 SurfaceModifierProfile)
-#setttings.py
+
+from ThematicRender.keys import (SurfaceKey, DriverKey, FileKey, DriverSpec, SurfaceSpec, \
+                               _BlendSpec, FactorSpec, NoiseProfile, SurfaceModifierProfile,
+                               FeatureSmoothingProfile, EdgeProfile, FactorKey, _GatedStepSpec)
+
 BLEND_PIPELINE = [
     _BlendSpec(
     # ARID LAYER
@@ -95,26 +97,13 @@ scale=2.3, contrast=0.7),
         enabled=True, comp_op="write_output", buffer="canvas"
     ), ]
 
-_SURFACE_TO_FILE_KEYS: Dict["SurfaceKey", FrozenSet[str]] = field(
-    default_factory=lambda: {
-        SurfaceKey.ARID_BASE: frozenset({"arid_base"}),
-        SurfaceKey.ARID_VEGETATION: frozenset({"arid_vegetation"}),
-        SurfaceKey.ARID_COMPOSITE: frozenset({"arid_composite"}),
-        SurfaceKey.ARID_RED_BASE: frozenset({"arid_red_base"}),
-
-        SurfaceKey.HUMID_BASE: frozenset({"humid_base"}),
-        SurfaceKey.HUMID_VEGETATION: frozenset({"humid_vegetation"}),
-        SurfaceKey.THEME_OVERLAY: frozenset({"theme_qml"}),
-    }, init=False, repr=False, )
-
 FACTOR_SPECS: list[FactorSpec] = [
     FactorSpec(
-    name="elev",  function_id="elevation_norm", default_factory=_zeros,
+    name="elev",  function_id="elevation_norm",
     drivers=frozenset({DriverKey.DEM}), desc="Normalized 0..1 elevation", required_noise="biome"
 ),
     FactorSpec(
     name="elev_m",
-    default_factory=_zeros,
     function_id="elevation_raw",
     drivers=frozenset({DriverKey.DEM}),
     desc="Raw physical elevation in meters for ramp sampling."
@@ -122,54 +111,52 @@ FACTOR_SPECS: list[FactorSpec] = [
     FactorSpec(
         name="water_alpha",
         function_id="water_alpha",
-        default_factory=_ones,
         drivers=frozenset({DriverKey.WATER_PROXIMITY, DriverKey.THEME}),
         desc="Fades water opacity at the shoreline to reveal the bottom."
     ),
     FactorSpec(
     name="moisture",  function_id="moisture",
-    default_factory=_ones, drivers=frozenset({DriverKey.PRECIP}), required_noise="biome",
+    drivers=frozenset({DriverKey.PRECIP}), required_noise="biome",
     desc="Environmental gradient mask (Arid vs Humid) derived from precipitation data."
 ), FactorSpec(
     name="canopy", function_id="canopy",
-    default_factory=_ones, drivers=frozenset({DriverKey.FOREST}), required_noise="forest",
+    drivers=frozenset({DriverKey.FOREST}), required_noise="forest",
     desc="Biological mask defining vegetation density (Forest vs Meadow)."
 ), FactorSpec(
     name="lith",  function_id="lith", required_noise="geology",
-    default_factory=_zeros, drivers=frozenset({DriverKey.LITH}),
+    drivers=frozenset({DriverKey.LITH}),
     desc="Organic transition mask for red-rock lithology regions."
 ), FactorSpec(
     name="snow",  function_id="snow",
-    default_factory=_zeros, drivers=frozenset({DriverKey.DEM}),
+    drivers=frozenset({DriverKey.DEM}),
     desc="High-contrast mask for permanent snow and ice based on elevation jitter."
 ), FactorSpec(
     name="hillshade",
-    function_id="hillshade", default_factory=_ones, drivers=frozenset({DriverKey.HILLSHADE}),
+    function_id="hillshade",  drivers=frozenset({DriverKey.HILLSHADE}),
     desc="A raster representing modeled topographic shading."
 ), FactorSpec(
     name="theme",  function_id="theme",
-    default_factory=_zeros, drivers=frozenset({DriverKey.THEME}),
+    drivers=frozenset({DriverKey.THEME}),
     files=frozenset({FileKey.THEME_QML}),
     desc="Smoothed opacity mask for thematic LandFire categories (glaciers, water, etc.)."
 ), FactorSpec(
     name="water", function_id="water_mask",
-    default_factory=_zeros, drivers=frozenset({DriverKey.THEME}),
+    drivers=frozenset({DriverKey.THEME}),
     desc="Binary mask for water bodies used for specialized water effects."
 ), FactorSpec(
     name="water_depth",
-    function_id="water_depth", default_factory=_zeros,
+    function_id="water_depth",
     drivers=frozenset({DriverKey.WATER_PROXIMITY}),
     desc="Distance-based gradient inside water bodies to simulate bathymetric darkening."
 ), FactorSpec(
     name="water_glint",
-    function_id="water_glint", default_factory=_zeros, drivers=frozenset({DriverKey.THEME}),
+    function_id="water_glint",  drivers=frozenset({DriverKey.THEME}),
     required_noise="water", desc="High-frequency specular highlights for water surfaces.",
     required_factors=("water",),
     ),
     FactorSpec(
         name="water_ripples",
         function_id="water_ripples",
-        default_factory=_ones,
         drivers=frozenset({DriverKey.THEME}),
         required_noise="water",
         required_factors=("water",),
@@ -202,8 +189,6 @@ DRIVER_LOGIC_PARAMS: Final[dict[str, dict[str, Any]]] = {
     },
     "lith": {
         "band": 1, "start": 0, "full": 100, "blur_px": 12.0,"max_opacity": 1.0,
-       # "noise_amp": 0.5, "contrast": 2.2, "max_opacity": 0.8
-        #"noise_amp": 0.7, "contrast": 1.5,"noise_atten_power": 0.5,
         "noise_amp": 0.55,  "contrast": 1.2,  "sensitivity": 0.8,
     },
     "playa": {
@@ -319,3 +304,44 @@ SURFACE_SPECS: list[SurfaceSpec] = [SurfaceSpec(
     files=frozenset({FileKey.THEME_QML}),
     desc="Categorical colors for specific features (water, rock, glacier) defined in QML."
 ), ]
+
+THEME_SMOOTHING_PROFILES: Final[dict[str, FeatureSmoothingProfile]] = {
+    "water": FeatureSmoothingProfile(precedence=5, smoothing_radius=3.0, expansion_weight=0.4),
+    "rock": FeatureSmoothingProfile(precedence=4, smoothing_radius=4.0, expansion_weight=0.4),
+    "volcanic": FeatureSmoothingProfile(precedence=3, smoothing_radius=3.0, expansion_weight=0.4),
+    "glacier": FeatureSmoothingProfile(precedence=2, smoothing_radius=3.0, expansion_weight=0.2),
+    "playa": FeatureSmoothingProfile(precedence=1, smoothing_radius=3.0, expansion_weight=0.3),
+    "outwash": FeatureSmoothingProfile(precedence=1, smoothing_radius=3.0, expansion_weight=0.3),
+    "_default_": FeatureSmoothingProfile(precedence=0, smoothing_radius=3.0, expansion_weight=0.3),
+}
+
+EDGE_PROFILES: Final[dict[str, EdgeProfile]] = {
+    "glacier": EdgeProfile(
+        edge_blur_px=2, transition_width_px=1, falloff_rate=0.8, max_opacity=0.8
+    ),
+    "rock": EdgeProfile(edge_blur_px=8, transition_width_px=2, falloff_rate=0.8, max_opacity=0.5),
+    "volcanic": EdgeProfile(
+        edge_blur_px=4, transition_width_px=20, falloff_rate=0.7, max_opacity=0.5
+    ),
+    "playa": EdgeProfile(edge_blur_px=4, transition_width_px=45, falloff_rate=0.3, max_opacity=0.4),
+    "water": EdgeProfile(edge_blur_px=2, transition_width_px=0, falloff_rate=0.8, max_opacity=0.7),
+    "outwash": EdgeProfile(
+        edge_blur_px=2, transition_width_px=6, falloff_rate=0.8, max_opacity=0.7
+    ),
+}
+
+
+_GATED_STEP_SPECS: Final[dict[str, _GatedStepSpec]] = {
+    "moisture": _GatedStepSpec(
+        driver_key=DriverKey.PRECIP, factor_key=FactorKey.PRECIP, default_fill=1.0, lerp_low=1.0,
+        noise_id="biome"
+    ),
+    "lith": _GatedStepSpec(
+        driver_key=DriverKey.LITH, factor_key=FactorKey.LITH, default_fill=0.0, lerp_low=0.0,
+        noise_id="biome", ),
+    "elevation": _GatedStepSpec(
+        driver_key=DriverKey.DEM, factor_key=FactorKey.DEM, default_fill=0.0, lerp_low=0.0,
+        noise_id="biome", ),
+}
+
+

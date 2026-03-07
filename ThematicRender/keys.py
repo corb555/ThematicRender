@@ -1,20 +1,10 @@
+#keys.py
+
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Callable, Optional, Tuple, Set, FrozenSet, List, Dict, Protocol
+from typing import Any,  Optional, Tuple, Set, FrozenSet, List, Dict, Protocol
 
 import numpy as np
-
-
-def _zeros(shape_hw: tuple[int, int]) -> np.ndarray:
-    """Return HxWx1 float32 filled with 0.0."""
-    h, w = shape_hw
-    return np.zeros((h, w, 1), dtype=np.float32)
-
-
-def _ones(shape_hw: tuple[int, int]) -> np.ndarray:
-    """Return HxWx1 float32 filled with 1.0."""
-    h, w = shape_hw
-    return np.ones((h, w, 1), dtype=np.float32)
 
 
 class SurfaceKey(StrEnum):
@@ -104,7 +94,6 @@ class ConfigView(Protocol):
 class FactorSpec:
     name: str
     function_id: str
-    default_factory: Callable[[tuple[int, int]], np.ndarray]
     drivers: FrozenSet[DriverKey] = frozenset()
     required_factors: Tuple[str, ...] = field(default_factory=tuple)
     files: FrozenSet[FileKey] = frozenset()
@@ -197,3 +186,93 @@ class ResolvedManifest:
     factor_details: List[FactorSpec]
     surface_details: List[SurfaceSpec]
     pipeline: List[_BlendSpec]
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureSmoothingProfile:
+    """
+    Parameters for Raster Boundary Refinement and Generalization.
+
+    This profile controls how discrete, low-resolution thematic classes are
+    interpolated and smoothed to align with high-resolution grids. It
+    effectively mitigates aliasing and "stair-step" resampling artifacts.
+
+    Attributes:
+        precedence (int):
+            The topological priority of the feature class. When smoothing causes
+            two features to overlap, the class with higher precedence 'claims' the
+            contested pixels.
+            Range: 0 (Background) to 10 (Critical Infrastructure/Water).
+            Use: Set high for features with strict boundaries (e.g., Shorelines)
+            to prevent them from being 'swallowed' by sprawling features like Rock.
+
+        smoothing_radius (float):
+            The standard deviation for Gaussian kernel smoothing.
+            Range: 0.5 (Preserve local detail) to 5.0 (Broad generalization).
+            Use: Increase to remove blocky artifacts from low-res source data.
+            Decrease for features with complex, high-frequency perimeters like
+            craggy outcrops.
+
+        expansion_weight (float):
+            The probability threshold that determines the new feature boundary.
+            Range: 0.01 (Aggressive Buffer/Dilation) to 0.5 (Conservative/Eroded).
+            Use: Lower values 'dilate' the feature, creating a safety
+            buffer to prevent alpha-thinning. Increase for features that should
+            remain compact and avoid 'bloating' into adjacent zones.
+    """
+    precedence: int
+    smoothing_radius: float
+    expansion_weight: float
+
+
+@dataclass(frozen=True, slots=True)
+class EdgeProfile:
+    """
+    Parameters for the spatial blending of feature margins.
+
+    This profile governs the 'Alpha Decay' — the mathematical transition from
+    100% feature presence to 0% (background) based on Euclidean distance
+    from the generalized boundary.
+
+    Attributes:
+        edge_blur_px (int):
+            The radius of sub-pixel anti-aliasing.
+            Range: 1 (Sharp/Technical) to 15 (Soft/Organic).
+            Use: Fixes aliasing on high-resolution grids. Increase for volumetric
+            features like glaciers or clouds; decrease for high-precision
+            boundaries like waterlines or parcel edges.
+
+        transition_width_px (int):
+            The width of the internal 'Fringe' or 'Ramp' zone in pixels.
+            Range: 0 (Binary contact) to 100+ (Regional gradient).
+            Use: Simulates ecotones or transitional zones (e.g., the 'bleed'
+            between a salt flat and soil). Set to 0 for geological contacts.
+
+        falloff_rate (float):
+            The exponential power (Gamma) of the transition curve.
+            Range: 0.5 (Convex/Foggy) to 3.0 (Concave/Heavy).
+            Use: Values > 1.0 maintain high opacity until the very edge,
+            creating a 'Solid' feel. Values < 1.0 create a 'Lingering' effect,
+            where the feature appears as a faint dusting into the background.
+
+        max_opacity (float):
+            The peak transparency limit for the feature class.
+            Range: 0.0 (Invisible) to 1.0 (Fully Opaque).
+            Use: Set < 1.0 for translucent layers like atmospheric haze,
+            suspended sediment in water, or thin vegetation canopy to allow
+            underlying terrain textures to remain visible.
+    """
+    edge_blur_px: int = 2
+    transition_width_px: int = 0
+    falloff_rate: float = 1.0
+    max_opacity: float = 1.0
+
+
+@dataclass(frozen=True, slots=True)
+class _GatedStepSpec:
+    driver_key: Any
+    factor_key: Any
+    default_fill: float
+    lerp_low: float
+    noise_id: str = ""
+

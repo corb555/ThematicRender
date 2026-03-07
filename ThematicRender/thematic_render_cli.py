@@ -6,67 +6,105 @@ from ThematicRender.config_mgr import ConfigMgr, analyze_pipeline
 from ThematicRender.pipeline_engine import PipelineEngine
 from ThematicRender.settings import BLEND_PIPELINE, SURFACE_SPECS, FACTOR_SPECS
 
+import sys
+import argparse
+from pathlib import Path
+
+from ThematicRender.config_mgr import ConfigMgr, analyze_pipeline
+from ThematicRender.pipeline_engine import PipelineEngine
+from ThematicRender.settings import BLEND_PIPELINE, FACTOR_SPECS, SURFACE_SPECS
+
+def _validate_file_existence(cfg: ConfigMgr):
+    """
+    Since validate_paths was removed from ConfigMgr to keep it logic-only,
+     we perform the disk check here before starting the engine.
+    """
+    for key, path in cfg.files.items():
+        if key == "output":
+            if not path.parent.exists():
+                raise FileNotFoundError(f"Output directory missing: {path.parent}")
+            continue
+
+        if not path.exists():
+            raise FileNotFoundError(f"Required input file missing: [{key}] -> {path}")
 
 def main():
     parser = argparse.ArgumentParser(description="Thematic Render Pipeline")
 
+    # Positional Arguments
     parser.add_argument("prefix", help="Path prefix (e.g. 'build/Profile/Profile')")
-    parser.add_argument("output", help="Output path")
+    parser.add_argument("output", help="Output path override")
 
-    # YAML config is  the primary source for all paths
+    # Required Arguments
     parser.add_argument("--config", required=True, help="Path to the YAML config file")
 
     # Operational flags
-    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing output")
     parser.add_argument("--describe", action="store_true", help="Generate pipeline description")
-    parser.add_argument(
-        "--describe_only", action="store_true", help="Generate pipeline description and EXIT"
-        )
+    parser.add_argument("--describe_only", action="store_true", help="Generate description and EXIT")
+    parser.add_argument("--multi", action="store_true", help="Multiprocess")
 
-    parser.add_argument("--percent", help="Build preview version (percent)")
-    parser.add_argument("--row", help="Build preview version (row)")
-    parser.add_argument("--col", help="Build preview version (col)")
-    parser.add_argument("--co", action="append", help="Creation options (e.g. COMPRESS=LZW)")
+    # Preview Params
+    parser.add_argument("--percent", type=float, help="Build preview version (0.0 to 1.0)")
+    parser.add_argument("--row", type=float, help="Focal point Y (0.0 to 1.0)")
+    parser.add_argument("--col", type=float, help="Focal point X (0.0 to 1.0)")
 
     print("Thematic Render")
     args = parser.parse_args()
 
-    # Load config and verify paths exist within the YAML
+    # 1. Load, Fuse, and Resolve Config
     try:
-        # Load config file
-        config = ConfigMgr.load(Path(args.config))
-        config.resolve_paths(args.prefix, args.output)
-        config.validate_paths()
-    except (ValueError, FileNotFoundError) as e:
-        print(f"Configuration Error: {e}")
+        # The new atomic factory method
+        config = ConfigMgr.build(
+            config_path=Path(args.config),
+            prefix=args.prefix,
+            output_override=args.output
+        )
+
+        # Perform physical disk checks
+        _validate_file_existence(config)
+
+    except (ValueError, FileNotFoundError, KeyError) as e:
+        print(f"\n❌ Configuration Error: {e}")
         return
 
-    config.apply_creation_options(args.co)
     print(f"Config File: {args.config}\n")
 
-    pipeline_eng = PipelineEngine(config, BLEND_PIPELINE, args.percent, args.row, args.col)
+    # 2. Initialize Engine
+    pipeline_eng = PipelineEngine(config, BLEND_PIPELINE, args.percent, args.row, args.col, args.multi)
 
+    # 3. Handle Documentation / Diagnostics
     if args.describe or args.describe_only:
-        # Use the resources from the setup phase
         desc_file = f"{args.prefix}_describe.md"
+
+        # analyze_pipeline now uses the simplified ConfigMgr
         report = analyze_pipeline(
-            cfg=pipeline_eng.cfg, resources=pipeline_eng.resources, pipeline=pipeline_eng.pipeline,
-            factor_specs=FACTOR_SPECS, surface_specs=SURFACE_SPECS
+            cfg=pipeline_eng.cfg,
+            resources=pipeline_eng.resources,
+            pipeline=pipeline_eng.pipeline,
+            factor_specs=FACTOR_SPECS,
+            surface_specs=SURFACE_SPECS
         )
 
         with open(desc_file, "w") as f:
             f.write(report)
         print(f"✅ Pipeline description generated in: {desc_file}\n")
+
         if args.describe_only:
             sys.exit(0)
 
+    # 4. Execute Render
     try:
-        print("Processing rasters...")
+        if args.multi:
+            print("Processing rasters. [Multi processor]")
+        else:
+            print("Processing rasters. [Single processor]")
+
         pipeline_eng.process_rasters()
         print("✅ Success.")
-    except MemoryError as e:
-        print(f"Pipeline Failed: {e}")
-
+    except Exception as e:
+        print(f"\n❌ Pipeline error: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

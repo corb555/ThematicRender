@@ -50,7 +50,7 @@ class NoiseRegistry:
         self.providers: Dict[str, NoiseProvider] = {}
         self.profiles = profiles
 
-        base_seed = cfg.get("seed", 42)
+        base_seed = cfg.get_global("seed", 42)
 
         for noise_id, profile in profiles.items():
             # Use a high-quality 2k tile as the basis for all lookups

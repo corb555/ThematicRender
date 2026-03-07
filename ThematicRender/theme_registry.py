@@ -1,10 +1,13 @@
+from pathlib import Path
 from typing import Dict, Optional, Any
 
 import numpy as np
 
-from ThematicRender.config_mgr import THEME_SMOOTHING_PROFILES
 from ThematicRender.keys import DriverKey
 from ThematicRender.qml_palette import QmlPalette
+from ThematicRender.settings import THEME_SMOOTHING_PROFILES
+from ThematicRender.spatial_math import get_smooth_theme
+
 
 #theme_registry.py
 
@@ -24,10 +27,16 @@ class ThemeRegistry:
         # REMOVE the 'if not self.cfg.factor_on' check.
         # If we are here, the pipeline needs it.
         try:
-            qml_path = self.cfg.input_path("theme_qml", context=f"{context} (THEME QML style)")
+            qml_path = self.cfg.path("theme_qml")
+            if not qml_path:
+                raise RuntimeError(f"Theme Registry: 'theme_qml') not in config/files ({context}).")
+
+            if not qml_path.exists():
+                raise FileNotFoundError(f"Theme Registry: QML file not found: {qml_path} ({context}).")
+
             self.qml_palette = QmlPalette.load(qml_path)
             self.lut_rgb = self.qml_palette.build_lut_rgb()
-        except Exception as e:
+        except MemoryError as e:
             print(f"⚠️ Theme Registry: Could not load QML ({e}). Style provider may fail.")
 
 
@@ -59,10 +68,7 @@ class ThemeRegistry:
         if theme_ids_2d is None or not np.any(theme_ids_2d):
             return theme_ids_2d
 
-        # The math logic lives in the FactorLibrary to keep the Registry clean
-        from .factor_library import FactorLibrary
-
-        return FactorLibrary.get_smooth_theme(
+        return get_smooth_theme(
             theme_ids_2d,
             self.label_to_val,
             THEME_SMOOTHING_PROFILES
