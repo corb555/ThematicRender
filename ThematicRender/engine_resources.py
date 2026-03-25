@@ -43,7 +43,7 @@ class EngineResources:
         self.renderer_procs: List[mp.Process] = []
         self.writer_proc: Optional[mp.Process] = None
 
-    def setup_engine(self, num_slots: int = 100) -> None:
+    def setup_engine(self) -> None:
         print("[EngineResources] Performing Cold Boot...")
         ctx_mp = mp.get_context("spawn")
 
@@ -60,7 +60,7 @@ class EngineResources:
         self.stack.callback(self.ctx_store.cleanup)
 
         # 3. Pre-allocate Raster SHM Pools
-        self._initialize_shm_pools(num_slots)
+        self._initialize_shm_pools(self.system_params.get("input_slots"))
 
         # 4. Spawn Workers (Pass the SHM name so they can attach)
         shm_name = self.ctx_store.shm.name
@@ -100,10 +100,6 @@ class EngineResources:
         if not self.ctx_store:
             raise RuntimeError("Engine not initialized.")
 
-        # assert_pickle(reader_data, "ReaderContext")
-        # assert_pickle(worker_data, "WorkerContext")
-        # assert_pickle(writer_data, "WriterContext")
-
         self.ctx_store.write_contexts(job_id, reader_data, worker_data, writer_data)
 
     def shutdown(self):
@@ -113,8 +109,10 @@ class EngineResources:
                 proc.terminate()
         self.stack.close()
 
-    def _initialize_shm_pools(self, num_slots: int) -> None:
-        """Determines required memory footprint and allocates SHM segments."""
+    def _initialize_shm_pools(self, input_slots: int, out_slots=16) -> None:
+        """Determines required memory footprint and allocates SHM segments.
+        :param out_slots:
+        """
         # This logic is extracted from the previous monolithic setup_engine
         # We use the config to sense the required halo and data types.
 
@@ -123,6 +121,8 @@ class EngineResources:
         max_halo = self.engine_cfg.get("system.max_halo")
         pool_h = block_h + 2 * max_halo
         pool_w = block_w + 2 * max_halo
+
+        print(f"Allocating Input Slots: {input_slots} per driver")
 
         # 1. Input Pools (DEM, Forest, etc.)
         for drv_key in self.engine_cfg.get("driver_specs"):
@@ -134,7 +134,7 @@ class EngineResources:
                 mask_shape=(1, pool_h, pool_w), mask_dtype=np.dtype(np.float32)
             )
 
-            pool = SharedMemoryPool(spec, num_slots, prefix=f"tr_{drv_key}")
+            pool = SharedMemoryPool(spec, input_slots, prefix=f"tr_{drv_key}")
             self.stack.callback(pool.cleanup)
             self.pool_map[drv_key] = pool
 
@@ -143,8 +143,9 @@ class EngineResources:
             data_shape=(3, 256, 256), data_dtype=np.dtype(np.uint8), mask_shape=(1, 256, 256),
             mask_dtype=np.dtype(np.float32)
         )
-        self.output_pool = SharedMemoryPool(out_spec, slots=16, prefix="tr_output")
+        self.output_pool = SharedMemoryPool(out_spec, slots=out_slots, prefix="tr_output")
         self.stack.callback(self.output_pool.cleanup)
+        print(f"Allocating Output Slots: {out_slots} ")
 
         # 3. Persistent Registry
         # We boot with a "boot" context ID until the first render request arrives

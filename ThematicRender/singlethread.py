@@ -1,7 +1,7 @@
 debug_mode = False
 limit = 10
 if debug_mode:
-    print(f"🔬 DEBUG MODE: Processing first {limit} blocks...")
+    #print(f"🔬 DEBUG MODE: Processing first {limit} blocks...")
     active_windows = win_list[:limit]
     iterable = enumerate(active_windows)
 else:

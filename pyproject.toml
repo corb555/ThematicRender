@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "thematic-render"
-version = "1.4"
+version = "1.5"
 description = "A powerful terrain shading pipeline that synthesizes biome and thematic factors (elevation, moisture, canopy, lithology, water, etc) and composites them into stylized, georeferenced GeoTIFF map textures."
 authors = [{ name = "corb" }]
 readme = { file = "docs/readme.md", content-type = "text/markdown" }

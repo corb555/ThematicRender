@@ -51,6 +51,8 @@ class RenderConfig:
     surfaces: List[SurfaceSpec]
     noises: Dict[str, NoiseSpec]
     modifiers: Dict[str, SurfaceModifierSpec]
+    theme_render: Dict[str, Any]
+    theme_smoothing_specs: Dict[str, Any]
 
     @classmethod
     def load(cls, config_path: Path) -> "RenderConfig":
@@ -64,6 +66,7 @@ class RenderConfig:
             raise RenderConfigError(f"YAML Syntax Error in {config_path.name}: {e}")
 
         print(f"RenderConfig LOADING {config_path}")
+
 
         context = "initialization"
         current_item = "n/a"
@@ -137,6 +140,10 @@ class RenderConfig:
                     )
                 )
 
+            # 6. THEMES
+            theme_render=defs.get("theme_render", {})
+            theme_smoothing_specs=defs.get("theme_smoothing_specs", {})
+
             # 6. BLEND PIPELINE
             context = "pipeline"
             pipeline = []
@@ -160,7 +167,7 @@ class RenderConfig:
             return cls(
                 logic=defs.get("drivers", {}), specs=driver_specs, files={}, raw_defs=defs,
                 pipeline=pipeline, factors=factors, surfaces=surfaces, noises=noises,
-                modifiers=modifiers
+                modifiers=modifiers, theme_render=theme_render, theme_smoothing_specs=theme_smoothing_specs
             )
 
         except KeyError as e:
@@ -600,7 +607,7 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str]:
     md.header("Thematic Categories", 2)
     md.tbl_hdr("Label", "ID", "Opacity", "Noise Amp", "Edge Softness", "Status")
 
-    label_to_id = ctx.theme_registry.label_to_id
+    label_to_id = ctx.theme_registry.name_to_id
     for label, cat_id in label_to_id.items():
         # Bridge QML Label to biome.yml Logic
         params = cfg.get_logic(label)

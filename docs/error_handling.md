@@ -25,17 +25,28 @@ receives validates the job_id in received messages where appropriate.
 | >=0    | Valid Job     |
 
 
-### 1.2 Strategies
-Because the Daemon uses multiple processes, two different strategies are used for shutdown versus job
-cancellation.
+### 1.2 Shutdown and Cancellation Strategies
+Because the Daemon uses multiple processes, there are challengs in synchronizing all the processes.  
+Two different strategies are used for shutdown versus job
+cancellation to minimize the complexities of synchronization.
 The **Daemon** employs a "Passive Invalidation" strategy for job cancellation and 
 an "Active Poisoning" strategy for system shutdown. 
 
 ### 1.3 Severity Mapping
 All errors are propagated from tasks to the Orchestrator via an `ErrorPacket`. The Orchestrator acts based on the assigned severity:
-*   **Severity 0 (Fatal):** Triggers a full system Shutdown.
-*   **Severity 1 (Critical):** Triggers a Job Cancellation.
-*   **Severity 2 (Warning):** Logged and sent to the client; the job continues.
+*   **Warning:** Logged and sent to the client; the job continues.
+*   **Cancel:** Triggers a Job Cancellation.
+*   **Fatal:** Triggers a full system Shutdown.
+
+Components generally detect errors from raised exceptions.
+
+* Warning - A rendering setting which may not be ideal but will produce an accurate raster.  These are directly
+handled by the rendering component and sent as warnings to the Client.
+* Job Cancel - An error which will prevent correct building of the raster but not impact system integrity. Components
+will generally detect these from FileNotFound and ValueError exceptions and send those as Critical to the Orchestrator.
+* Fatal - The system cannot continue to process data. Any exception not included above will be assumed to be a
+fatal error.
+
 
 ### 1.4 Orchestrator State Machine
 
@@ -159,8 +170,7 @@ The following messages are dispatched to the client proxy during error/lifecycle
 *   **System Shutdown:**
     `{"msg": "system_offline", "message": "Daemon shutting down."}`
 
-
-
+## Implementation Phases
 
 ### Phase 1: The Foundation (States & IDs)
 **Goal:** Establish the authoritative state machine and the integer-based Job ID logic.

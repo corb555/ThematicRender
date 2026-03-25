@@ -61,6 +61,7 @@ class PipelineEngine:
 
 class PipelineOrchestrator:
     def __init__(self, eng_resources, io_system, dispatcher):
+        self.last_activity_ts = None
         self.eng_resources = eng_resources
         self.resolver: JobResolver = JobResolver()
         self.io_system = io_system
@@ -88,26 +89,53 @@ class PipelineOrchestrator:
         self.running = True
 
     def run_loop(self) -> None:
-        while self.running:
-            # TODO Add 1.4 State Machine
-            # TODO Add 2.3 Heartbeat Monitor
-            try:
-                # Timeout allows us to pulse progress even if no tiles are finishing
-                envelope: Envelope = self.eng_resources.status_q.get(timeout=0.05)
-            except Empty:
-                self._pulse_client_progress()  # Pulse during idle/stall
-                continue
-            except KeyboardInterrupt:
-                break
+            import traceback
 
-            self.update_telemetry(envelope.op)
+            while self.running:
+                try:
+                    # 1. THE INGESTION PHASE
+                    try:
+                        envelope: Envelope = self.eng_resources.status_q.get(timeout=0.05)
+                        self.last_activity_ts = time.perf_counter() # Reset watchdog
+                    except Empty:
+                        # Heartbeat check (Phase 3 of your Tock strategy)
+                        # TODO self._check_for_deadlocks()
+                        self._pulse_client_progress()
+                        continue
 
-            # Dispatch envelope to a handler
-            self._dispatch.get(envelope.op, self._handle_unknown_op)(envelope)
+                    # 2. THE DISPATCH PHASE
+                    self.update_telemetry(envelope.op)
+                    self._dispatch.get(envelope.op, self._handle_unknown_op)(envelope)
+                    self._pulse_client_progress()
 
-            # Pulse during active processing
-            self._pulse_client_progress()
+                except KeyboardInterrupt:
+                    print("🛑 User initiated shutdown (Ctrl+C)")
+                    self._initiate_emergency_shutdown("User Interruption")
+                    break
 
+                except Exception as e:
+                    # Something went wrong in the Orchestrator logic itself.
+
+                    # A. High-Fidelity Logging
+                    print(f"\n CRITICAL ORCHESTRATOR FAILURE")
+                    traceback.print_exc()
+
+                    # B. Notify the Client
+                    # Don't leave the Editor UI spinning forever
+                    self._send_to_client({
+                        "msg": "error",
+                        "job_id": "system",
+                        "severity": 0,
+                        "message": f"Render Pipeline Crash: {str(e)}"
+                    })
+
+                    # C. Resource Reclamation
+                    # This is the most important part. Tell workers to die
+                    # and unlink the SHM segments so the OS stays clean.
+                    self._initiate_emergency_shutdown(f"System Error: {e}")
+
+                    # D. Exit the loop
+                    self.running = False
     def _handle_job_request(self, envelope: Envelope) -> None:
         """Queue a new job request and start it if no job is active."""
         data = envelope.payload
@@ -119,6 +147,19 @@ class PipelineOrchestrator:
         if not self.job_control.busy:
             self._start_next_job()
 
+    def _initiate_emergency_shutdown(self, reason: str):
+        """Emergency cleanup to prevent zombie processes and SHM leaks."""
+        # 1. Set the Job ID to -3 (SHUTTING_DOWN)
+        self.eng_resources.status_store.set_job_id("-3")
+
+        # 2. Send Poison Pills (N readers, N workers, 1 writer)
+        # Follow the order: Reader -> Renderer -> Writer
+        print(f"Sending poison pills to workers... Reason: {reason}")
+        # TODO logic to put Op.SHUTDOWN in all queues ...
+
+        # 3. Clean up Orchestrator's internal SHM handles
+        self.eng_resources.cleanup_all_shm()
+
     def showtime(self, msg):
         wall_start = datetime.now()
         start_ts = wall_start.strftime("%H:%M:%S.%f")[:-3]
@@ -129,20 +170,50 @@ class PipelineOrchestrator:
         self.previous_ts = wall_start
 
     def _start_next_job(self) -> bool:
-        """Start the next queued job, if any."""
         if not self.pending_jobs: return False
         json_job_req = self.pending_jobs.pop(0)
-        job_id = json_job_req.get("job_id", "unknown")
 
         try:
-            # 1. Resolve request into a fully populated manifest
+            # 1. Resolve request into a manifest
             job_manifest = self.resolver.create_job_manifest(json_job_req)
+        except Exception as e:
+            # SEV_CANCEL equivalent: Configuration or Input Error
+            print(f"⚠️ [ORCHESTRATOR] Invalid Job Error : {e}")
+            self._send_to_client(
+                {
+                    "msg": "error", "job_id": -1, "severity": 1,  # SEV_CANCEL
+                    "message": f"⚠️ Job Initialization Failed: {str(e)}"
+                }
+            )
+            self.job_control.clear_job()
 
-            # 2. HYDRATE: Setup persistent engines (Only if not already warm)
-            if self.factor_eng is None:
+            # Try to start the next pending job if there is one
+            self._start_next_job()
+            return False
+
+        job_id = job_manifest.job_id
+        try:
+            # 2. VALIDATE RESOURCE MAPPING
+            # Check if the current SHM pools match what the manifest needs
+            needs_rebuild = False
+            if self.eng_resources is None:
+                needs_rebuild = True
+            else:
+                # Get the names of all drivers required by this specific job
+                required_drivers = set(job_manifest.resources.drivers.keys())
+                # Get the names of all drivers currently allocated in SHM
+                allocated_drivers = set(self.eng_resources.pool_map.keys())
+
+                # If a new driver (like 'water_depth') is required but not allocated
+                if not required_drivers.issubset(allocated_drivers):
+                    print(f"🔄 [Orchestrator] Pipeline change detected. Rebuilding SHM for: {required_drivers - allocated_drivers}")
+                    needs_rebuild = True
+
+            # 3. HYDRATE / RE-HYDRATE
+            if needs_rebuild or self.factor_eng is None:
                 self._hydrate_logic(job_manifest.render_cfg, job_manifest.resources)
 
-            # 3. HOT-SWAP: Update settings for the current job
+            # 4. HOT-SWAP (Normal Logic/Style updates)
             self.factor_eng.cfg = job_manifest.render_cfg
             self.surface_eng.cfg = job_manifest.render_cfg
             self.theme_reg.load_metadata(job_manifest.render_cfg)
@@ -152,6 +223,10 @@ class PipelineOrchestrator:
             self.io_system.initialize_physical_output(
                 job_manifest.temp_out_path, job_manifest.profile
             )
+
+            #  Reset the telemetry counters for the new job
+            if hasattr(self.eng_resources, 'registry'):
+                self.eng_resources.registry.start_session()
 
             # 5. CONTEXT & IPC: Build worker recipes and publish to SHM
             win_list = self._generate_job_windows(job_manifest)
@@ -209,6 +284,29 @@ class PipelineOrchestrator:
             self._handle_shutdown(None)
             return False
 
+    def _hydrate_logic(self, render_cfg, resources) -> None:
+
+        # this is  Render specific, not Pipeline
+        """Initialize and immediately validate the persistent math engines."""
+        self.noise_lib = NoiseLibrary(render_cfg, profiles=render_cfg.noises, create_shm=True)
+        self.eng_resources.manage_noise_library(self.noise_lib)
+        self.theme_reg = ThemeRegistry(render_cfg)
+
+        # Create the engine
+        self.factor_eng = FactorEngine(
+            render_cfg, self.theme_reg, self.noise_lib, render_cfg.factors, resources, None
+        )
+
+        # --- EARLY SANITY CHECK ---
+        # If the engine holds a Queue, it will fail here instantly.
+        # assert_pickle(self.factor_eng, "FactorEngine (Initial Hydration)")
+
+        self.surface_eng = SurfaceEngine(render_cfg)
+        # assert_pickle(self.surface_eng, "SurfaceEngine (Initial Hydration)")
+
+        self.compositor = CompositingEngine()
+
+
     def _handle_tiles_finalized(self, envelope: Envelope) -> None:
         """Publish the finalized temp file and notify the client."""
         if self.job_control is None:
@@ -258,8 +356,72 @@ class PipelineOrchestrator:
         )
         self.showtime(f"JOB {self.job_control.job_id} COMPLETE")
 
+        # CACHE stats
+        self._print_cache_analysis()
         self.job_control.clear_job()
         self._start_next_job()
+
+    def _print_cache_analysis(self):
+        stats = self.eng_resources.registry.get_telemetry()
+
+        total_req = stats['hits'] + stats['misses']
+        hit_pct = (stats['hits'] / total_req * 100) if total_req > 0 else 0
+        fill_pct = (stats['slots_used'] / stats['slots_total'] * 100) if stats['slots_total'] > 0 else 0
+
+        # 1. Basic Stats
+        print(f"\n---  CACHE MEMORY REPORT ---")
+        print(f"Physical RAM Reserved: {stats['mb_allocated']:.1f} MB")
+        print(f"Cache Fill:      {stats['slots_used']}/{stats['slots_total']} ({fill_pct:.1f}%)")
+        print(f"Hit Ratio:             {hit_pct:.1f}% ({stats['hits']} hits, {stats['misses']} misses)")
+
+        # 2. Automated Analysis
+        print(f"Analysis:")
+
+        if stats['is_cold']:
+            print(f"  🔸 Status: COLD START. This was the first time rendering this region.")
+        elif hit_pct > 99.9:
+            print(f"  🔹 Status: 100% of data was served from RAM.")
+            print(f"  🔹 Impact: The entire region is currently pinned in memory.")
+        elif hit_pct > 80:
+            print(f"  🔹 Status: OPTIMIZED. Most data was served from RAM.")
+            print(f"  🔹 Impact: Your current slot count is perfectly tuned for this area.")
+        elif fill_pct > 95:
+            print(f"  🛑 Status: SATURATED. The cache is full and ejecting blocks.")
+            print(f"  🛑 Recommendation: On your 32GB system, INCREASE 'slots' in system.yml.")
+        if fill_pct < 40 and not stats['is_cold']:
+            print(f"  💡 Status: OVER-PROVISIONED. You are  using {fill_pct:.1f}% of reserved RAM.")
+            print(f"  💡 Recommendation: You can safely reduce slots if you need RAM for other apps.")
+
+        # 3. Disk I/O Savings
+        # Estimate: Each block is roughly 0.4MB (256x256 float32 + mask)
+        io_saved_mb = stats['hits'] * 0.4
+        if io_saved_mb > 0:
+            print(f"Performance Gain: Prevented {io_saved_mb:.1f} MB of redundant disk reads.")
+        print("-" * 30 + "\n")
+
+        # Calculate how much of the work relied on 'Scratchpad' memory
+        transit_pct = (stats['transit_demands'] / (stats['hits'] + stats['misses']) * 100)
+
+        print(f"Transit Utilization:   {stats['transit_demands']} blocks ({transit_pct:.1f}%)")
+        print(f"Analysis (Ratio Balance):")
+
+        # RULE 1: Static Ratio is too LOW
+        if stats['slots_used'] == stats['slots_total'] and stats['transit_demands'] > 0:
+            if stats['mb_allocated'] < 8000: # You have 32GB, so 8GB is a safe ceiling
+                print(f"  📈 Suggestion: INCREASE 'static_ratio' or 'input_slots'.")
+                print(f"     You have plenty of RAM. Moving more blocks to Static will boost Hit Ratio.")
+
+        # RULE 2: Static Ratio is too HIGH (Danger of Deadlock)
+        # If transit_demands is very high relative to available transit slots
+        transit_slots = stats['slots_total'] * 0.25 # current default
+        if stats['transit_demands'] > (transit_slots * 2): # Very high turnover
+             print(f"  ⚠️ Warning: High Transit Turnover.")
+             print(f"     If workers hit a timeout (7s), DECREASE 'static_ratio' to free up scratchpad.")
+
+        # RULE 3: Perfect Balance
+        if hit_pct > 70 and stats['transit_demands'] == 0:
+            print(f"  💎 Status: OPTIMIZED BALANCE.")
+            print(f"     The region fits entirely in the Static cache.")
 
     def _generate_job_windows(self, manifest: JobManifest) -> List[Window]:
         """Calculates global windows using a uniform 256x256 grid."""
@@ -359,11 +521,12 @@ class PipelineOrchestrator:
         payload: ErrorPacket = envelope.payload
         job_id = payload.job_id or self.job_control.job_id
         sev = payload.severity
+        print(f"Err sev={sev}")
 
         # 1. Log to Orchestrator Console
-        sev_label = {0: "FATAL", 1: "ERROR", 2: "WARNING"}.get(sev, "ERROR")
+        sev_label = {0: "FATAL", 1: "CANCEL", 2: "WARNING"}.get(sev)
         print(
-            f"❌ [{sev_label}] {payload.stage} stage failure "
+            f"❌ [{sev_label}] {payload.section}  failure "
             f"(Tile: {payload.tile_id}, Job: '{job_id}'): {payload.message}"
         )
 
@@ -372,7 +535,7 @@ class PipelineOrchestrator:
         self._send_to_client(
             {
                 "msg": "error", "job_id": job_id, "severity": sev,
-                "message": f"{payload.stage} {sev_label.lower()}: {payload.message}",
+                "message": f"{payload.section} {sev_label.lower()}: {payload.message}",
             }
         )
 
@@ -459,28 +622,6 @@ class PipelineOrchestrator:
         except Exception as exc:
             print(f"⚠️ [Orchestrator] Failed to unlink temp file '{path}': {exc}")
 
-    def _hydrate_logic(self, render_cfg, resources) -> None:
-
-        # this is  Render specific, not Pipeline
-        """Initialize and immediately validate the persistent math engines."""
-        self.noise_lib = NoiseLibrary(render_cfg, profiles=render_cfg.noises, create_shm=True)
-        self.eng_resources.manage_noise_library(self.noise_lib)
-        self.theme_reg = ThemeRegistry(render_cfg)
-
-        # Create the engine
-        self.factor_eng = FactorEngine(
-            render_cfg, self.theme_reg, self.noise_lib, render_cfg.factors, resources, None
-        )
-
-        # --- EARLY SANITY CHECK ---
-        # If the engine holds a Queue, it will fail here instantly.
-        # assert_pickle(self.factor_eng, "FactorEngine (Initial Hydration)")
-
-        self.surface_eng = SurfaceEngine(render_cfg)
-        # assert_pickle(self.surface_eng, "SurfaceEngine (Initial Hydration)")
-
-        self.compositor = CompositingEngine()
-
     def _finalize_job(self) -> None:
         """Begin successful job finalization by asking the writer to flush and close."""
         if self.job_control is None:
@@ -504,12 +645,13 @@ class PipelineOrchestrator:
             return
 
         now = time.perf_counter()
-        if now - self.last_progress_pulse < 5.0:
+        if now - self.last_progress_pulse < 0.3:
             return
 
         job = self.job_control
         # Calculate integer percentage
         pct = int((job.tiles_written / job.total_tiles) * 100) if job.total_tiles > 0 else 0
+        pct = max(2, pct)  # show client we have started (at least 2%)
 
         self._send_to_client(
             {
@@ -518,7 +660,6 @@ class PipelineOrchestrator:
         )
         self.last_progress_pulse = now
 
-        # print(f"Orch Dispatch MSG OP: {op}")
 
 
 class JobResolver:
@@ -595,7 +736,6 @@ class JobResolver:
         write_offset = (0, 0)
         driver_metadata = {}
 
-        # Handle rasterio.errors.RasterioIOError
         try:
             with IOManager(render_cfg, resources.drivers, resources.anchor_key) as io:
                 # Geography Hash (based on paths and mtimes)
@@ -603,8 +743,11 @@ class JobResolver:
                 profile = self.build_output_profile(io)
 
                 for dkey in resources.drivers:
-                    src = io.sources[dkey]
-                    driver_metadata[dkey] = {"width": src.width, "height": src.height}
+                    try:
+                        src = io.sources[dkey]
+                        driver_metadata[dkey] = {"width": src.width, "height": src.height}
+                    except Exception as e:
+                        raise IOError(f"IO err {dkey}: {str(e)}")
 
                 if 0.0 < percent < 1.0:
                     envelope = self.calculate_preview_window(

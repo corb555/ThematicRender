@@ -8,7 +8,7 @@ import numpy as np
 import rasterio
 from rasterio.windows import Window
 
-from ThematicRender.ipc_packets import DriverBlockRef
+from ThematicRender.ipc_packets import DriverBlockRef, WKR_TIMEOUT
 from ThematicRender.keys import DriverKey, DriverRndrSpec
 from ThematicRender.render_config import JobManifest
 from ThematicRender.shared_memory import SlotRegistry
@@ -49,21 +49,25 @@ class IOSystem:
         max_halo = manifest.render_cfg.get_max_halo()
         refs = {}
 
-        # We use a context manager for IOManager to safely probe the source drivers
-        with IOManager(
-                manifest.render_cfg, manifest.resources.drivers, manifest.resources.anchor_key
-        ) as io:
-            for dkey in manifest.resources.drivers:
-                # Get or allocate from registry (handled by Dispatcher, but used here for ID)
-                slot_id, _ = registry.get_or_allocate(dkey, window)
+        try:
+            # We use a context manager for IOManager to safely probe the source drivers
+            with IOManager(
+                    manifest.render_cfg, manifest.resources.drivers, manifest.resources.anchor_key
+            ) as io:
+                for dkey in manifest.resources.drivers:
+                    # Get or allocate from registry (handled by Dispatcher, but used here for ID)
+                    slot_id, _ = registry.get_or_allocate(dkey, window)
 
-                # Use IOManager's utility to find the exact pixel slices
-                # including halo buffers
-                geom = io.get_geometry_metadata(dkey, window, max_halo)
+                    # Use IOManager's utility to find the exact pixel slices
+                    # including halo buffers
 
-                refs[dkey] = DriverBlockRef(
-                    slot_id=slot_id, data_h_w=geom.full_h_w, inner_slices=geom.inner_slices
-                )
+                    geom = io.get_geometry_metadata(dkey, window, max_halo)
+
+                    refs[dkey] = DriverBlockRef(
+                        slot_id=slot_id, data_h_w=geom.full_h_w, inner_slices=geom.inner_slices
+                    )
+        except Exception as e:
+            raise FileNotFoundError(f"Dkey: {dkey} {e}")
 
         return refs
 
@@ -140,7 +144,10 @@ class IOManager:
 
     def __enter__(self):
         for dkey, path in self.drivers.items():
-            self.sources[dkey] = self._stack.enter_context(rasterio.open(path))
+            try:
+                self.sources[dkey] = self._stack.enter_context(rasterio.open(path))
+            except Exception as e:
+                raise IOError(f"Error for '{dkey}' path:'{path}'.     {str(e)}")
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -163,15 +170,14 @@ class IOManager:
         fill = src.nodata if src.nodata is not None else 0
         src.read(
             1, window=geom.read_window, boundless=True, fill_value=fill, out=out_data[0, :h, :w]
-            # <--- Crucial: slice 2D destination
         )
 
-        if key == DriverKey.THEME:
+        """        if key == DriverKey.THEME:
             # Check what we just read into the buffer
             vals_read = np.unique(
                 out_data[0, :h, :w]
                 )  # print(f"DEBUG [Reader] Key: {key} | Values read from Disk: {vals_read}")
-
+        """
         # 3. Direct Mask Read/Generation
         if src.count in (2, 4):
             # Read Alpha channel directly into the SHM mask slice
@@ -240,7 +246,14 @@ class IOManager:
 
         # 5. STORAGE HANDOFF (Shared Memory)
         # Acquire a binary slot from the pool (Blocks if pool is exhausted)
-        slot_id = pool.acquire()
+        try:
+            slot_id = pool.acquire(timeout=WKR_TIMEOUT)
+        except Exception:
+            # This captures queue.Empty if using a multiprocessing.Queue internally
+            raise RuntimeError(
+                f"SHM Pool Exhausted for driver '{key}'. "
+            )
+
 
         try:
             # Commit the 2D local arrays into the 4D Shared Memory buffer

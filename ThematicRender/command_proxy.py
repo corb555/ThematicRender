@@ -177,6 +177,10 @@ class CommandProxy:
                 payload = self.response_q.get(timeout=self.RESPONSE_TIMEOUT_S)
             except Empty:
                 continue
+            except (OSError, EOFError):
+                # This triggers if the queue handle is closed while we are waiting
+                # We exit the loop quietly as the system is shutting down
+                break
 
             conn = self._get_active_connection()
             if conn is None:

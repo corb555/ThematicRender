@@ -7,7 +7,7 @@ import uuid
 import numpy as np
 from rasterio.windows import Window
 
-from ThematicRender.ipc_packets import DriverBlockRef
+from ThematicRender.ipc_packets import DriverBlockRef, WKR_TIMEOUT
 from ThematicRender.keys import DriverKey
 
 # shared_memory
@@ -220,13 +220,12 @@ class SharedMemoryPool:
         except:
             return False
 
-    def acquire(self, block: bool = True):
+    def acquire(self, timeout=WKR_TIMEOUT, block: bool = True):
         """Modified to support non-blocking calls for eviction logic."""
         # print(f"  <<< SHM GET <<<")
 
         if block:
-            res = self._available_slots.get()
-            # print("<< shm done")
+            res = self._available_slots.get(block=True, timeout=timeout)
             return res
         else:
             # Raises queue.Empty if nothing is there
@@ -257,9 +256,10 @@ class SlotRegistry:
     ):
         self.pool_map = pool_map
         self.context_id = context_id
-        self.is_cold = True  # Defaults to True
+        self.is_warm_hit_detected = False
         self.hits = 0
         self.misses = 0
+        self.transit_demands = 0 # New counter
 
         # (DriverKey, Window_Tuple) -> slot_id
         # These mappings are "Frozen" once assigned.
@@ -287,6 +287,13 @@ class SlotRegistry:
                 self.transit_indices[key].add(idx)
                 pool.release(idx)
 
+    def start_session(self):
+        """Called by Orchestrator at the start of every job."""
+        self.hits = 0
+        self.misses = 0
+        self.transit_demands = 0
+        self.is_warm_hit_detected = False
+
     def get_or_allocate(self, key: DriverKey, window: Window) -> Tuple[int, bool]:
         """
         Coordinates slot assignment using a stable spatial key.
@@ -300,6 +307,7 @@ class SlotRegistry:
             slot_id = self.static_cache[key][win_key]
             self.ref_counts[key][slot_id] += 1
             self.hits += 1
+            self.is_warm_hit_detected = True
             return slot_id, True
 
         # 2. STATIC CACHE MISS: TRY PRIMING STATIC ZONE
@@ -312,7 +320,8 @@ class SlotRegistry:
 
         # 3. STATIC ZONE FULL: USE TRANSIT SLOT (SCRATCHPAD)
         # This acts as a cache miss every time for blocks beyond the static capacity.
-        self.is_cold = False
+        self.transit_demands += 1
+
         pool = self.pool_map[key]
         try:
             # Transit slots are acquired from the shared Pool Queue
@@ -347,17 +356,25 @@ class SlotRegistry:
                 pass
 
     def get_telemetry(self) -> dict:
-        """Returns a snapshot of cache performance."""
-        # Calculate how many static slots were actually filled
-        # We look at one pool (e.g. the anchor) to get a representative count
-        first_key = list(self.static_cache.keys())[0]
+        """Returns raw counters and physical memory usage for the Orchestrator."""
+        total_bytes = 0
+        for pool in self.pool_map.values():
+            # Sum up data and mask buffers
+            total_bytes += pool._d_shm.size + pool._m_shm.size
+
+        # Calculate usage of the Static partition from the first driver pool
+        first_key = next(iter(self.static_cache))
         used = len(self.static_cache[first_key])
-        # static_available initially held the total count
         total = used + len(self.static_available[first_key])
 
         return {
-            "hits": self.hits, "misses": self.misses, "static_used": used, "static_total": total,
-            "is_cold": self.is_cold
+            "mb_allocated": total_bytes / (1024 * 1024),
+            "slots_used": used,
+            "slots_total": total,
+            "hits": self.hits,
+            "misses": self.misses,
+            "transit_demands": self.transit_demands, # New
+            "is_cold": not self.is_warm_hit_detected
         }
 
     def reset_context(self, new_context_id: str):

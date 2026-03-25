@@ -61,7 +61,7 @@ def reader_loop(read_q, status_q, shm_name: str, pool_map) -> None:
                         # JOB-LEVEL FAILURE
                         # We log it, notify Orch to cancel the job, but KEEP the reader alive.
                         payload = ErrorPacket(
-                            job_id=packet.job_id, tile_id=packet.tile_id, stage=section,
+                            job_id=packet.job_id, tile_id=packet.tile_id, section=section,
                             severity=SEV_CANCEL,
                             message=f"{section} Error on {packet.driver_id.value}: {exc}"
                         )
@@ -75,7 +75,7 @@ def reader_loop(read_q, status_q, shm_name: str, pool_map) -> None:
 
                         payload = ErrorPacket(
                             job_id=packet.job_id if packet else "unknown",
-                            tile_id=packet.tile_id if packet else -1, stage=section,
+                            tile_id=packet.tile_id if packet else -1, section=section,
                             severity=SEV_FATAL, message=f"CRITICAL: {type(e).__name__}: {e}"
                         )
                         send_error(status_q, payload)
@@ -86,7 +86,7 @@ def reader_loop(read_q, status_q, shm_name: str, pool_map) -> None:
 
                 case _:
                     payload = ErrorPacket(
-                        severity=SEV_FATAL, job_id="unknown", tile_id=-1, stage=section,
+                        severity=SEV_FATAL, job_id="unknown", tile_id=-1, section=section,
                         message=f"{section} Unknown OpCode: {envelope.op!r}", )
                     send_error(status_q, payload)
     finally:

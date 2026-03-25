@@ -6,7 +6,7 @@ import numpy as np
 # factor_library.py
 from ThematicRender.keys import DriverKey
 from ThematicRender.spatial_math import normalize_step, lerp
-from ThematicRender.theme_registry import refine_organic_signal
+from ThematicRender.theme_registry import refine_organic_signal_a, refine_organic_signal_b
 
 # factor_library.py
 
@@ -68,7 +68,7 @@ def _map_and_refine(data_2d, masks_2d, name, lib_ctx, driver_key):
     remaped = normalize_step(raw_plane, float(params.get("start")), float(params.get("full")))
 
     # 2. Organic Naturalization: Blur, Noise, Contrast, and Power-curves
-    refined = refine_organic_signal(
+    refined = refine_organic_signal_a(
         mask=remaped, blur_px=float(params.get("blur_px", 0.0)),
         noise_amp=float(params.get("noise_amp", 0.0)), noise_id=params.get("noise_id"),
         # Uses 'geology', 'biome', etc.
@@ -110,31 +110,25 @@ class FactorLibrary:
     @staticmethod
     @spatial_factor("theme_composite")
     def theme_composite(data_2d, masks_2d, name, lib_ctx):
-        """
-        Multi-category aggregator for thematic overlays.
-        """
+        """Aggregate configured thematic categories into a composite alpha."""
         theme_ids = data_2d[DriverKey.THEME]
-        label_to_val = lib_ctx.themes.label_to_id
+
+        # cleanup of categorical IDs
+        theme_ids = lib_ctx.themes.get_smoothed_ids(theme_ids)
+
+        tile_ctx = lib_ctx.themes.build_tile_context(theme_ids)
         composite_alpha = np.zeros(lib_ctx.target_shape, dtype=np.float32)
 
-        for label, params in lib_ctx.cfg.logic.items():
-            target_id = label_to_val.get(label)
-            if target_id is None: continue
-            # print(f"DEBUG [Factor]: Category '{label}' is using YAML settings (Opacity: {
-            # params.get('max_opacity')})")
+        for spec in tile_ctx.active_specs:
+            binary_mask = tile_ctx.masks_by_id[spec.theme_id]
+            if not np.any(binary_mask):
+                continue
 
-            binary_mask = (theme_ids == target_id).astype("float32")
-            if not np.any(binary_mask): continue
-
-            # The categorical refiner uses the same standard math as continuous signals
-            cat_alpha = refine_organic_signal(
-                mask=binary_mask, blur_px=float(params.get("blur_px", 0.0)),
-                noise_amp=float(params.get("noise_amp", 0.0)),
-                noise_id=params.get("noise_id", "geology"),
-                contrast=float(params.get("contrast", 1.0)),
-                max_opacity=float(params.get("max_opacity", 1.0)), ctx=lib_ctx, name=label
+            cat_alpha = refine_organic_signal_b(
+                mask=binary_mask,
+                spec=spec,
+                ctx=lib_ctx,
             )
-
             composite_alpha = np.maximum(composite_alpha, cat_alpha)
 
         return composite_alpha * np.squeeze(masks_2d[DriverKey.THEME])
@@ -255,7 +249,7 @@ class FactorLibrary:
             return np.zeros(lib_ctx.target_shape, dtype="float32")
 
         # Bridge between YAML logic and QML IDs
-        target_val = lib_ctx.theme_registry.label_to_id.get(target_label)
+        target_val = lib_ctx.theme_registry.name_to_id.get(target_label)
         if target_val is None:
             return np.zeros(lib_ctx.target_shape, dtype="float32")
 
@@ -282,7 +276,7 @@ class FactorLibrary:
         # 2. Identify the target category from Config
         # Allows this function to work for 'Water', 'Forest', 'Playa', etc.
         target_label = params.get("label", name)
-        target_id = lib_ctx.theme_registry.label_to_id.get(target_label.lower())
+        target_id = lib_ctx.theme_registry.name_to_id.get(target_label.lower())
 
         if target_id is None:
             return np.zeros(lib_ctx.target_shape, dtype="float32")

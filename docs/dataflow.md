@@ -53,8 +53,13 @@ Design Notes:
   and job context live in shared memory.
 - ``job_id`` validation is the primary safeguard against stale packets from
   earlier jobs.
+- rendering is entirely controlled by biome.yml settings.
+- the rendering system consists of multiple engines with feature libraries
+- there are 4 major engines with feature libraries: factor_engine, compositing_engine, noise_library, surface_engine
+- for example, the compositing engine launches actions from the library: create_buffer, lerp, 
+ multiply, alpha_over, apply_zonal_gradient, write_output
 
-Execution Flow:
+Execution Flow - Happy Path:
 1. The client sends ``JOB_REQUEST`` to the Orchestrator.
 2. The Orchestrator queues incoming requests and starts the next job when
 idle.
@@ -66,15 +71,15 @@ context is ignored.
 6. For each tile, the Dispatcher emits one or more ``LOAD_BLOCK`` packets
 to Reader processes.
 7. Readers load the requested input blocks and emit ``BLOCK_LOADED``.
-8. Once all required blocks for a tile are available, the Dispatcher marks
-that tile ready for rendering.
+8. The Dispatcher maintains per-tile dependency state.Once all required blocks for a tile are available, the Dispatcher marks
+that tile ready for rendering. 
 9. The Orchestrator sends the tile to a Renderer as ``RENDER_TILE``.
 10. The Renderer produces the final image tile and emits ``WRITE_TILE``.
-11. The Writer writes the tile to the output raster and emits
+11. The Writer writes the tile to the output file and emits
 ``TILE_WRITTEN``.
 12. The Orchestrator releases the tile's resources and dispatches the next
 tile.
-13. After the Orchestrator receives ``TILE_WRITTEN`` for all tiles in the
+13. The Orchestrator counts ``TILE_WRITTEN``.  Once that count matches the total for the
 active job, it sends ``JOB_DONE`` to the Writer.
 14. The Writer flushes and closes the output, then emits
 ``TILES_FINALIZED``.

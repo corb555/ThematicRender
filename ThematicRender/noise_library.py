@@ -167,6 +167,16 @@ def generate_fbm_noise_tile(
         weights: tuple[float, ...] = (0.4, 0.3, 0.3), stretch: tuple[float, float] = (1.0, 1.0),
         seed: int = 42
 ) -> np.ndarray:
+    """
+    This function generates a multi-scale 2D smooth noise tile by creating one independent uniform-random field
+    per (sigma, weight) pair, Gaussian-blurring each field at a scale sigma * stretch, normalizing each blurred
+    field individually to 0–1, weighting and summing the normalized fields, then normalizing the final composite
+    again to 0–1. Smaller sigmas contribute finer texture, larger sigmas contribute broader structure, weights
+    control the relative dominance of each spatial scale, stretch introduces anisotropy by scaling blur separately
+    in Y and X, and mode="wrap" makes the blur tile-friendly across image edges. Because each octave is
+    normalized before weighting and the final composite is normalized again, weights should be interpreted
+    as controlling relative pattern dominance rather than simple output amplitude.
+    """
     from scipy.ndimage import gaussian_filter
     rng = np.random.default_rng(seed)
     out = np.zeros(shape, dtype="float32")

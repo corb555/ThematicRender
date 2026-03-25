@@ -2,6 +2,7 @@
 
 import multiprocessing
 import sys
+import traceback
 from typing import Dict, Any, Tuple, Optional
 
 import numpy as np
@@ -34,7 +35,7 @@ def load_worker_job_ctx(job_id: str, shm_store: JobContextStore) -> WorkerContex
 
 
 def render_loop(work_q, writer_q, status_q, shm_name, out_pool, pool_map):
-    section = "WORKER"
+    section = "RENDER"
     setproctitle.setproctitle(multiprocessing.current_process().name)
 
     shm_store = JobContextStore(name=shm_name)
@@ -62,17 +63,19 @@ def render_loop(work_q, writer_q, status_q, shm_name, out_pool, pool_map):
                             pool_map=pool_map
                         )
                         writer_q.put(Envelope(op=Op.WRITE_TILE, payload=result))
-                    except (ValueError, OSError) as e:
+                    except (ValueError, OSError, KeyError) as e:
                         # SEV_CANCEL: Notify Orch, but STAY in the while loop
                         payload = ErrorPacket(
-                            packet.job_id, -1, section, SEV_CANCEL,
-                            f"{section} Unknown message rcvd"
+                            job_id= packet.job_id,tile_id= -1,section= section,severity= SEV_CANCEL,
+                            message= f"{section} {e}"
                             )
                         send_error(status_q, payload)
                     except Exception as e:
                         # SEV_FATAL: Notify Orch and EXIT the process
+                        stack_trace_str = traceback.format_exc()
+
                         payload = ErrorPacket(
-                            packet.job_id, -1, section, SEV_FATAL, f"{section} Unknown message rcvd"
+                            packet.job_id, -1, section, SEV_FATAL, f"{section} Error {e} {stack_trace_str}"
                             )
                         send_error(status_q, payload)
                         break
@@ -94,14 +97,14 @@ def render_loop(work_q, writer_q, status_q, shm_name, out_pool, pool_map):
     except ValueError as e:
         print(f"{section} RENDER ERROR {e}")
         payload = ErrorPacket(
-            job_id=packet.job_id, tile_id=-1, stage=section, severity=SEV_CANCEL,
+            job_id=packet.job_id, tile_id=-1, section=section, severity=SEV_CANCEL,
             message=f"Warning: {e}"
             )
         send_error(status_q, payload)
     except Exception as e:
         print(f"{section} RENDER Exception {e}")
         payload = ErrorPacket(
-            job_id=packet.job_id, tile_id=-1, stage=section, severity=SEV_FATAL,
+            job_id=packet.job_id, tile_id=-1, section=section, severity=SEV_FATAL,
             message=f"Fatal: {e}"
             )
         send_error(status_q, payload)
@@ -122,10 +125,7 @@ def render_task(*, packet, ctx, workspace, out_pool, pool_map):
             continue
 
         if drv_spec.cleanup_type == "categorical":
-            # Pass the explicit THEME_SMOOTHING_SPEC from settings/config
-            data_2d[drv_key] = ctx.themes.get_smoothed_ids(
-                data_2d[drv_key], ctx.render_cfg.get_smoothing_specs()
-            )
+            data_2d[drv_key] = ctx.themes.get_smoothed_ids(data_2d[drv_key])
         elif drv_spec.cleanup_type == "continuous":
             radius = drv_spec.smoothing_radius
             if radius and radius > 0:

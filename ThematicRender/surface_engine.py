@@ -50,8 +50,7 @@ class SurfaceEngine:
         self.spec_registry = {s.key: s for s in cfg.surfaces}
 
         # --- DETERMINISTIC OFFSET CACHE ---
-        # We calculate this once. Every worker process will inherit
-        # these exact values.
+        # We calculate this once. Every worker process can use these to offset random effects
         self._offset_cache: Dict[SurfaceKey, int] = {}
         for skey in self.spec_registry.keys():
             seed_bytes = skey.encode('utf-8')
@@ -77,7 +76,7 @@ class SurfaceEngine:
         self.target_shape = (target_h, target_w)
 
         ctx = SurfaceContext(
-            cfg=self.cfg, noises=noises, window=window, surfaces=self.surfaces,  # Interpolators
+            cfg=self.cfg, noises=noises, window=window, surfaces=self.surfaces,
             target_shape=self.target_shape
         )
 
@@ -90,9 +89,10 @@ class SurfaceEngine:
                     f"Surface Engine: Required surface '{srf_key.value}' not found in registry. "
                     f"Check your SURFACE_SPECS definition. Available: {available}"
                 )
+
+            #  DEBUG SECTION **********
             # print(f"Gen surf: '{srf_key}' Provider '{spec.provider_id}'")
-            # TODO DEBUG **********
-            if srf_key == SurfaceKey.THEME_OVERLAY:
+            if False: #srf_key == SurfaceKey.THEME_OVERLAY:
                 # print(f"DEBUG [SurfaceEngine] Processing THEME_OVERLAY")
                 # print(f"DEBUG [SurfaceEngine]   Spec Driver: {spec.driver}")
 
@@ -115,7 +115,7 @@ class SurfaceEngine:
 
             try:
                 # --- STAGE 1: SYNTHESIS ---
-                # Generate the base RGB block from the provider (Ramp/Style/etc)
+                # Generate the base RGB block from the provider (Ramp/Theme/etc)
                 block = provider_fn(ctx, spec, data_2d, masks_2d, factors_2d, style_engine)
 
                 # --- STAGE 2: MODIFICATION ---
@@ -142,8 +142,6 @@ class SurfaceEngine:
         """
         Applies a sequence of transformations to a single RGB block.
         """
-        # from ThematicRender.settings import SURFACE_MODIFIER_SPECS
-
         for mod_cfg in spec.modifiers:
             mod_id = mod_cfg.get("id")
             profile_id = mod_cfg.get("profile_id")

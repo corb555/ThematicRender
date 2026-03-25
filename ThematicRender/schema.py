@@ -11,7 +11,6 @@ RENDER_SCHEMA: dict[str, Any] = {
     "seed": {"type": "integer", "required": False, "default": 1},
     "override_factor": {"type": "string", "required": False},
     "debug_factors": {"type": "string", "required": False},
-
     "files": {"type": "dict", "required": True},
     "prefixed_files": {"type": "dict", "required": False},
     "theme_smoothing_specs": {"type": "dict", "required": False},
@@ -22,23 +21,22 @@ RENDER_SCHEMA: dict[str, Any] = {
     "pipeline": {"type": "list", "required": True},
     "surface_modifier_specs": {"type": "dict", "required": False},
     "surfaces": {"type": "dict", "required": False},
+    "theme_render": {"type": "dict", "required": False},
+
 
     # ------------------------------------------------------------------
-    # Driver parameter blocks (NO per-driver enabled flags)
+    # Driver parameter blocks
     # ------------------------------------------------------------------
     "drivers": {
         "type": "dict", "required": True, "allow_unknown": True, "schema": {
-            # Moisture / vegetation likelihood
             "precip": {
                 "type": "dict", "required": False, "default": {},
-                # so the inner defaults apply even if precip: {} or omitted
                 "schema": {
                     "start": {"type": "float", "default": 180.0},
                     "full": {"type": "float", "default": 750.0},
                     "noise_amp": {"type": "float", "default": 0.2},
                     "noise_atten_power": {"type": "float", "default": 1.0},
                     "contrast": {"type": "float", "default": 1.0, "min": 0.1},
-
                 },
             },
 
@@ -49,18 +47,15 @@ RENDER_SCHEMA: dict[str, Any] = {
                     "noise_amp": {"type": "float", "default": 0.2},
                     "noise_atten_power": {"type": "float", "default": 1.0},
                     "contrast": {"type": "float", "default": 1.0, "min": 0.1},
-
                 },
             },
 
-            # Classification/Theme Type
             "theme_alpha": {
                 "type": "dict", "required": False, "default": {}, "schema": {
                     "strength": {"type": "float", "default": 1.0},
                 },
             },
 
-            # Lith tint selector (0..255 weight), affects soil + rock regardless of precip
             "lith": {
                 "type": "dict", "required": False, "default": {}, "schema": {
                     "start": {"type": "float", "default": 0.0},
@@ -70,7 +65,6 @@ RENDER_SCHEMA: dict[str, Any] = {
                 },
             },
 
-            # Simple snow model
             "snow": {
                 "type": "dict", "required": False, "default": {}, "schema": {
                     "snowline": {"type": "float", "default": 2800.0},
@@ -81,8 +75,6 @@ RENDER_SCHEMA: dict[str, Any] = {
                 },
             },
 
-            # Hillshade shaping knobs
-            #
             "hillshade": {
                 "type": "dict", "required": False, "default": {}, "schema": {
                     "strength": {"type": "float", "default": 0.80, "min": 0.0, "max": 1.0},

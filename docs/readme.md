@@ -166,3 +166,92 @@ Output: blend_window transposes the final (H, W, 3) buffer back to (3, H, W) uin
    Factor Engine: Demand-driven (derives requirements from pipeline). Uses FactorLibrary with a @spatial_factor decorator that manages execution timers and restores 3D shapes.
    Surface Engine: Manages a "Modifier Chain" (e.g., Mottle) and Samples 1D color ramps using physical meters (elev_m) to preserve precision and negative values.
    ConfigMgr: A "Fused Truth Store" built at startup. Merges settings.py (logic/specs) with YAML (paths/overrides). Uses get_logic(key), get_spec(key), and path(key) accessors.
+
+# Theme / Categorical Drivers
+
+A theme driver is a spatial raster whose pixel values represent **discrete category IDs** rather than continuous
+measurements. Example values might include `1 = Water`, `5 = Forest`, and `12 = Urban`. Because these values are
+categorical labels, they cannot be meaningfully interpolated, averaged, or blended the way continuous rasters can.
+
+A theme driver is  a `uint8` raster. Valid category IDs are `1-255`, and `0` is reserved
+to mean **no category / background**.
+
+Each theme driver must have an associated QML file (QGIS layer style) that defines the renderer’s category registry.
+The QML maps each class ID to:
+
+- a text label
+- an intended RGB color
+
+At load time, the registry parses the QML and builds lookup tables (LUTs), allowing the renderer to efficiently convert
+theme IDs into RGB thematic output.
+
+If multiple theme drivers are used in the same render configuration, their category labels must be globally unique so
+that per-category configuration remains unambiguous.
+Theme drivers are defined in:
+
+drivers:
+  theme_composite:
+    label: "theme_composite"
+
+surfaces:
+  theme_overlay:
+    driver: theme
+    coord_factor: null
+    required_factors: [theme_composite]
+    provider_id: theme
+    files: [theme_qml]
+    config: "EVT_theme.qml"
+    desc: >
+      Categorical colors for specific features (water, rock, glacier) 
+      defined in QML.
+
+Each category can also receive its own cleanup and rendering settings:
+
+theme_smoothing_specs:
+  theme_smoothing:
+    water: { smoothing_radius: 3.0 }
+    rock: { smoothing_radius: 6.0 }
+    volcanic: { smoothing_radius: 6.0 }
+    glacier: { smoothing_radius: 6.0 }
+    playa: { smoothing_radius: 6.0 }
+    outwash: { smoothing_radius: 6.0 }
+    _default_: { smoothing_radius: 3.0 }
+
+theme_render:
+  categories:
+    water:
+      enabled: true
+      blur_px: 3.0
+      noise_amp: 0.0
+      contrast: 5.0
+      max_opacity: 0.8
+
+    rock:
+      enabled: true
+      blur_px: 5.0
+      noise_amp: 0.9
+      contrast: 0.8
+      max_opacity: 0.6
+      noise_id: geology
+
+    volcanic:
+      enabled: true
+      noise_amp: 0.5
+      contrast: 2.0
+      max_opacity: 0.8
+
+    glacier:
+      enabled: true
+      noise_amp: 0.6
+      contrast: 1.0
+      max_opacity: 0.9
+
+    playa:
+      enabled: true
+      blur_px: 8.0
+      noise_amp: 0.95
+      contrast: 0.5
+      max_opacity: 0.4
+
+    outwash:
+      enabled: false

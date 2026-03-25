@@ -58,8 +58,7 @@ class TileDispatcher:
             job_manifest: Fully resolved manifest for the active job.
             win_list: Tile windows to process for this job.
         """
-        print(f"DEBUG [Dispatcher] Job Initialized with {len(win_list)} tiles.")
-        print(f"DEBUG [Dispatcher] First Tile Window: {win_list[0]}")
+        print(f"[Dispatcher] Job Initialized with {len(win_list)} tiles.")
         self.current_job_manifest = job_manifest
         self.active_tiles.clear()
         self.current_tile_iterator = enumerate(win_list)

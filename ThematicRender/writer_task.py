@@ -54,7 +54,7 @@ def writer_loop(write_q, status_q, shm_name: str, out_pool) -> None:
                     except (ValueError, FileNotFoundError, OSError) as exc:
                         # Notify Orch so it can transition to CANCELLING
                         payload = ErrorPacket(
-                            job_id=packet.job_id, tile_id=packet.tile_id, stage=section,
+                            job_id=packet.job_id, tile_id=packet.tile_id, section=section,
                             severity=SEV_CANCEL, message=str(exc)
                             )
                         send_error(status_q, payload)
@@ -67,7 +67,7 @@ def writer_loop(write_q, status_q, shm_name: str, out_pool) -> None:
 
                         payload = ErrorPacket(
                             job_id=packet.job_id if packet else "unknown",
-                            tile_id=packet.tile_id if packet else -1, stage=section,
+                            tile_id=packet.tile_id if packet else -1, section=section,
                             severity=SEV_FATAL, message=f"CRITICAL: {type(e).__name__}: {e}"
                         )
                         send_error(status_q, payload)
@@ -120,7 +120,7 @@ def writer_loop(write_q, status_q, shm_name: str, out_pool) -> None:
 
         payload = ErrorPacket(
             job_id=packet.job_id if packet else "unknown", tile_id=packet.tile_id if packet else -1,
-            stage=section, severity=SEV_FATAL, message=f"CRITICAL: {type(e).__name__}: {e}"
+            section=section, severity=SEV_FATAL, message=f"CRITICAL: {type(e).__name__}: {e}"
         )
         send_error(status_q, payload)
 

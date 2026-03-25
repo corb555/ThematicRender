@@ -48,6 +48,26 @@ def spatial_surface(provider_id: str):
 
     return decorator
 
+@spatial_surface("theme")
+def _theme_provider(ctx: SurfaceContext, spec, data_2d, masks_2d, factors_2d, style_engine):
+    """Generate the theme surface for the current tile."""
+    theme_ids = data_2d.get(spec.driver)
+
+    if theme_ids is None:
+        available_keys = list(data_2d.keys())
+        raise ValueError(
+            f"Theme Provider: Driver '{spec.driver}' ({type(spec.driver)}) not found. "
+            f"Available keys: {available_keys}"
+        )
+
+    smoothed_ids = style_engine.get_smoothed_ids(theme_ids)
+    tile_ctx = style_engine.build_tile_context(smoothed_ids)
+
+    return style_engine.get_theme_surface(
+        smoothed_ids,
+        ctx,
+        tile_ctx=tile_ctx,
+    )
 
 @spatial_surface("ramp")
 def _ramp_provider(ctx: SurfaceContext, spec, data_2d, masks_2d, factors_2d, style_engine):
@@ -64,22 +84,6 @@ def _ramp_provider(ctx: SurfaceContext, spec, data_2d, masks_2d, factors_2d, sty
     coords = np.clip(factor_val, u_min, u_max)
     return interp_func(coords)
 
-
-@spatial_surface("theme")
-def _theme_provider(ctx: SurfaceContext, spec, data_2d, masks_2d, factors_2d, style_engine):
-    # DYNAMIC LOOKUP: Use the driver key defined in the surface spec
-    # This handles whatever Enum member (THEME, THEME_COMPOSITE, etc.) is actually used
-    theme_ids = data_2d.get(spec.driver)
-
-    if theme_ids is None:
-        # Useful error to catch the String vs Enum issue
-        available_keys = list(data_2d.keys())
-        raise ValueError(
-            f"Theme Provider: Driver '{spec.driver}' ({type(spec.driver)}) not found. "
-            f"Available keys: {available_keys}"
-        )
-
-    return style_engine.get_theme_surface(theme_ids, ctx)
 
 
 def register_modifier(mod_id: str):

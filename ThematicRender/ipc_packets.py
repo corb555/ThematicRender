@@ -10,6 +10,8 @@ from ThematicRender.keys import DriverKey
 
 WindowRect: TypeAlias = tuple[int, int, int, int]
 
+WKR_TIMEOUT = 7.0
+ORCH_TIMEOUT = 10.0
 
 @dataclass(frozen=True, slots=True)
 class DriverBlockRef:
@@ -112,7 +114,7 @@ SEV_WARNING = 2  # Job continues. Logged and sent to the client
 class ErrorPacket:
     job_id: str
     tile_id: int
-    stage: str
+    section: str
     severity: int
     message: str
 

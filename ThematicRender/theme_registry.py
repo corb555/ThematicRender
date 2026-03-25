@@ -1,4 +1,5 @@
-from typing import Dict, Optional, Any
+from dataclasses import dataclass
+from typing import Dict, Optional, Any, Mapping
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, binary_fill_holes, median_filter
@@ -6,205 +7,373 @@ from scipy.ndimage import gaussian_filter, binary_fill_holes, median_filter
 from ThematicRender.qml_palette import QmlPalette, _parse_color_attr
 from ThematicRender.render_config import RenderConfig
 
+MEDIAN_FILTER_SIZE = 3
+EPSILON = 1e-6
+
+BACKGROUND_THEME_ID = 0
+LUT_SIZE = 256
+CLAIM_THRESHOLD = 0.2
 
 # theme_registry.py
-class ThemeRegistry:
-    """Manages the translation of a categorical (theme) GIS raster into RGB surfaces.
 
-    A categorical raster is a spatial dataset where pixel values represent discrete
-    classifications (e.g., 1=Water, 5=Forest, 12=Urban) rather than continuous
-    measurements. Because the raster contains discrete category IDs, they cannot
-    be mathematically interpolated or blended directly.
+@dataclass(frozen=True, slots=True)
+class ThemeRuntimeSpec:
 
-    The QML file (QGIS Layer Style) serves as the explicit definition for these
-    categories. It defines the mapping between category IDs, text labels, and
-    intended RGB colors. This registry parses the QML to build high-speed Look-Up
-    Tables (LUTs) that allow the engine to "paint" the categorical data.
+    label: str
+    theme_id: int
+    rgb: tuple[int, int, int]
 
-    This class provides two primary services:
-    1. Surface Synthesis: Translates category IDs into separate floating-point RGB color
-       buffers using the LUT derived from the QML palette.
-    2. Smoothing: Provides a 'Melt and Grow' algorithm to resolve aliasing
-       (stairsteps) in low-resolution source data based on explicit precedence rules.
+    max_opacity: float = 1.0
+    blur_px: float = 0.0
+    noise_amp: float = 0.0
+    noise_id: str = "geology"
+    contrast: float = 1.0
+
+    smoothing_radius: float = 0.0
+
+    surface_noise_id: Optional[str] = None
+    surface_intensity: float = 0.0
+    surface_shift_vector: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    enabled: bool = True
+
+
+@dataclass(slots=True)
+class ThemeTileContext:
+    """Per-tile shared theme analysis.
+
+    Args:
+        theme_ids: Raw or smoothed theme ID raster for the tile.
+        present_ids: Set of theme IDs present in this tile.
+        active_specs: Active runtime specs that are both configured and present.
+        masks_by_id: Binary float masks keyed by theme ID.
     """
 
-    def __init__(self, cfg: RenderConfig):
+    theme_ids: np.ndarray
+    present_ids: set[int]
+    active_specs: list[ThemeRuntimeSpec]
+    masks_by_id: Dict[int, np.ndarray]
+
+
+class ThemeRegistry:
+    """Registry for categorical theme metadata and runtime rendering specs."""
+
+    def __init__(self, cfg: Any):
+        """Initialize the registry.
+
+        Args:
+            cfg: Render configuration.
+        """
         self.cfg = cfg
 
-        # 1. Metadata (Populated in Main, sent to Workers via Pickling)
-        self._label_to_id: Dict[str, int] = {}
-        self._id_to_color: Dict[int, tuple] = {}
+        # QML-derived metadata.
+        self._name_to_id: Dict[str, int] = {}
+        self._id_to_color: Dict[int, tuple[int, int, int]] = {}
 
-        # 2. Heavy Objects (Initialized per process)
+        # Worker-local heavy state.
         self.qml_palette: Optional[Any] = None
         self.lut_rgb: Optional[np.ndarray] = None
 
+        # Normalized runtime specs.
+        self._runtime_specs_by_label: Dict[str, ThemeRuntimeSpec] = {}
+        self._runtime_specs_by_id: Dict[int, ThemeRuntimeSpec] = {}
+
     @property
-    def label_to_id(self) -> Dict[str, int]:
-        """Provides the mapping even if qml_palette isn't loaded (e.g. in Main)."""
-        return self._label_to_id
+    def name_to_id(self) -> Dict[str, int]:
+        """Return mapping from label -> theme ID."""
+        return self._name_to_id
 
-    def load_metadata(self, render_cfg: RenderConfig) -> None:
-        """
-        Parses the QML from the CURRENT job config to extract metadata.
-        """
-        # Use the path from the manifest's config
+    @property
+    def runtime_specs_by_label(self) -> Dict[str, ThemeRuntimeSpec]:
+        """Return active/inactive runtime specs keyed by label."""
+        return self._runtime_specs_by_label
+
+    @property
+    def runtime_specs_by_id(self) -> Dict[int, ThemeRuntimeSpec]:
+        """Return runtime specs keyed by theme ID."""
+        return self._runtime_specs_by_id
+
+    def load_metadata(self, render_cfg: Any) -> None:
+
         qml_path = render_cfg.path("theme_qml")
-
         if not qml_path or not qml_path.exists():
             raise FileNotFoundError(f"Theme QML not found: {qml_path}")
 
-        # print(f"🎨 [ThemeRegistry] Loading colors from {qml_path.name}")
         self.qml_palette = QmlPalette.load(qml_path)
 
-        # Clear old data if this is a new job
-        self._label_to_id.clear()
+        self._name_to_id.clear()
         self._id_to_color.clear()
+        self._runtime_specs_by_label.clear()
+        self._runtime_specs_by_id.clear()
 
-        self._label_to_id.update(self.qml_palette.value_by_label)
+        self._name_to_id.update(self.qml_palette.value_by_label)
 
-        for v_str, entry in self.qml_palette.entries_by_value.items():
+        for value_str, entry in self.qml_palette.entries_by_value.items():
             rgb = _parse_color_attr(entry.color_hex)
-            if rgb:
-                val = int(v_str)
-                self._id_to_color[
-                    val] = rgb  # DIAGNOSTIC: Ensure we found the water  # if val == 4:  #
-                # print(f"DEBUG [ThemeRegistry] Found Water (ID 4): {rgb}")
+            if rgb is None:
+                continue
+            theme_id = int(value_str)
+            self._id_to_color[theme_id] = rgb
 
-        # print(f"🎨 [ThemeRegistry] Loaded {len(self._id_to_color)} color mappings.")  #
-        # EVIDENCE TRACE 1:  # print(f"TRACE [Main]: QML Path used: {render_cfg.path(
-        # 'theme_qml')}")  # print(f"TRACE [Main]: Dict Content for Water (ID 4): {
-        # self._id_to_color.get(4)}")  # print(f"TRACE [Main]: Total labels in dict: {len(
-        # self._label_to_id)}")
+        self._build_runtime_specs(render_cfg)
+
+    def _build_runtime_specs(self, render_cfg: Any) -> None:
+
+        categories_cfg = self._extract_theme_category_config(render_cfg)
+        smoothing_cfg = self._extract_smoothing_config(render_cfg)
+        modifiers_cfg = getattr(render_cfg, "modifiers", {}) or {}
+
+        # DEBUG
+        thr = getattr(render_cfg, "theme_render", {}) or {}
+        ct = thr.get("categories")
+
+        for label, cat_cfg in categories_cfg.items():
+            if label not in self._name_to_id:
+                raise ValueError(
+                    f"Theme '{label}' is configured but not found in the QML palette."
+                )
+
+            theme_id = self._name_to_id[label]
+            rgb = self._id_to_color.get(theme_id, (0, 0, 0))
+            smoothing_radius = float(
+                smoothing_cfg.get(label, smoothing_cfg.get("_default_", {})).get(
+                    "smoothing_radius", 0.0
+                )
+            )
+
+            modifier = modifiers_cfg.get(label)
+            surface_noise_id = getattr(modifier, "noise_id", None) if modifier else None
+            surface_intensity = float(getattr(modifier, "intensity", 0.0)) if modifier else 0.0
+            surface_shift_vector = tuple(
+                getattr(modifier, "shift_vector", (0.0, 0.0, 0.0))
+            ) if modifier else (0.0, 0.0, 0.0)
+
+            spec = ThemeRuntimeSpec(
+                label=label,
+                theme_id=theme_id,
+                rgb=rgb,
+                max_opacity=float(cat_cfg.get("max_opacity", 1.0)),
+                blur_px=float(cat_cfg.get("blur_px", 0.0)),
+                noise_amp=float(cat_cfg.get("noise_amp", 0.0)),
+                noise_id=str(cat_cfg.get("noise_id", "geology")),
+                contrast=float(cat_cfg.get("contrast", 1.0)),
+                smoothing_radius=smoothing_radius,
+                surface_noise_id=surface_noise_id,
+                surface_intensity=surface_intensity,
+                surface_shift_vector=tuple(float(v) for v in surface_shift_vector),
+                enabled=bool(cat_cfg.get("enabled", True)),
+            )
+
+            self._runtime_specs_by_label[label] = spec
+            self._runtime_specs_by_id[theme_id] = spec
+
+    def _extract_theme_category_config(self, render_cfg: Any) -> Dict[str, Mapping[str, Any]]:
+
+        theme_render = getattr(render_cfg, "theme_render", None)
+        if theme_render and getattr(theme_render, "get", None):
+            categories = theme_render.get("categories", {})
+            if categories:
+                return dict(categories)
+
+
+        logic = getattr(render_cfg, "logic", {}) or {}
+        return {
+            label: params
+            for label, params in logic.items()
+            if label in self._name_to_id
+        }
+
+    @staticmethod
+    def _extract_smoothing_config(render_cfg: Any) -> Dict[str, Mapping[str, Any]]:
+
+        all_specs = getattr(render_cfg, "theme_smoothing_specs", {}) or {}
+        if "theme_smoothing" in all_specs:
+            return dict(all_specs["theme_smoothing"])
+        return {}
 
     def load_theme_style(self) -> None:
-        """
-        Builds the physical LUT from pre-loaded metadata.
-        Call this in the WORKER process init.
-        """
+        """Build dense RGB LUT in worker process."""
         if self.lut_rgb is not None:
             return
 
-        # Initialize the dense NumPy array (256 categories, 3 RGB bands)
-        lut = np.zeros((256, 3), dtype=np.uint8)
+        lut = np.zeros((LUT_SIZE, 3), dtype=np.uint8)
+        for theme_id, rgb in self._id_to_color.items():
+            if not 0 <= theme_id < LUT_SIZE:
+                raise ValueError(f"Theme ID {theme_id} is outside LUT range 0-{LUT_SIZE - 1}.")
+            lut[theme_id] = rgb
 
-        # Fill LUT from the metadata inherited via pickling
-        for val, rgb in self._id_to_color.items():
-            if 0 <= val < 256:
-                lut[val] = rgb
-            else:
-                raise ValueError(f"BAD LUT. Val={val}")
+        self.lut_rgb = lut
 
-        self.lut_rgb = lut  # print(f"🔍 [ID:{id(self)}] load_theme_style COMPLETE. LUT[4] value:
-        # {self.lut_rgb[4]}")
+    def build_tile_context(self, theme_ids: np.ndarray) -> ThemeTileContext:
 
-    def get_theme_surface(self, theme_ids: np.ndarray, ctx: Any) -> np.ndarray:
+        present_ids = set(np.unique(theme_ids).tolist())
+        active_specs: list[ThemeRuntimeSpec] = []
+        masks_by_id: Dict[int, np.ndarray] = {}
+
+        for theme_id in present_ids:
+            if theme_id == BACKGROUND_THEME_ID:
+                continue
+
+            spec = self._runtime_specs_by_id.get(theme_id)
+            if spec is None or not spec.enabled:
+                continue
+
+            active_specs.append(spec)
+            masks_by_id[theme_id] = (theme_ids == theme_id).astype(np.float32)
+
+        active_specs.sort(key=lambda item: item.theme_id)
+        return ThemeTileContext(
+            theme_ids=theme_ids,
+            present_ids=present_ids,
+            active_specs=active_specs,
+            masks_by_id=masks_by_id,
+        )
+
+    def get_theme_surface(
+        self,
+        theme_ids: np.ndarray,
+        ctx: Any,
+        tile_ctx: Optional[ThemeTileContext] = None,
+    ) -> np.ndarray:
+
         if self.lut_rgb is None:
             self.load_theme_style()
 
-        # 1. Base Painting (from QML colors)
+        if tile_ctx is None:
+            tile_ctx = self.build_tile_context(theme_ids)
+
         indices = theme_ids.astype(np.uint8)
-        rgb_float = self.lut_rgb[indices].astype("float32")
+        rgb_float = self.lut_rgb[indices].astype(np.float32)
 
-        # 2. Apply per-category mottling
-        for label, target_id in self.label_to_id.items():
-            target_id = self.label_to_id.get(label)
-            if target_id is None or target_id not in theme_ids:
+        noise_cache: Dict[str, np.ndarray] = {}
+
+        for spec in tile_ctx.active_specs:
+            if not spec.surface_noise_id or spec.surface_intensity <= 0.0:
                 continue
 
-            # Get the modifier profile from the config
-            profile = ctx.cfg.modifiers.get(label)  # Looks for 'rock' or 'glacier' in modifiers
-            if not profile:
-                continue
+            noise = noise_cache.get(spec.surface_noise_id)
+            if noise is None:
+                noise_provider = ctx.noises.get(spec.surface_noise_id)
+                if noise_provider is None:
+                    raise KeyError(
+                        f"Missing noise provider '{spec.surface_noise_id}' "
+                        f"for theme '{spec.label}'."
+                    )
+                noise = np.squeeze(noise_provider.window_noise(ctx.window)).astype(np.float32)
+                noise_cache[spec.surface_noise_id] = noise
 
-            # Generate noise for this specific tile
-
-            noise_provider = ctx.noises.get(profile.noise_id)
-            noise = np.squeeze(noise_provider.window_noise(ctx.window))
             centered_noise = noise - 0.5
+            shift = (
+                centered_noise[..., np.newaxis]
+                * np.asarray(spec.surface_shift_vector, dtype=np.float32)
+                * spec.surface_intensity
+            )
+            mask_3d = tile_ctx.masks_by_id[spec.theme_id][..., np.newaxis]
+            rgb_float += shift * mask_3d
 
-            # Create the category mask
-            mask = (theme_ids == target_id)[..., np.newaxis]  # (H, W, 1)
+        rgb_float[theme_ids == BACKGROUND_THEME_ID] = 0.0
+        return np.clip(rgb_float, 0.0, 255.0)
 
-            # Calculate the shift for this category only
-            shift = (centered_noise[..., np.newaxis] * np.array(
-                profile.shift_vector
-                )) * profile.intensity
+    def get_smoothed_ids(self, theme_ids_2d: np.ndarray) -> np.ndarray:
 
-            # Apply only where the category exists
-            rgb_float += (shift * mask)
-
-        # 3. Cleanup and Standardize
-        rgb_float[theme_ids == 0] = 0
-        return np.clip(rgb_float, 0, 255)
-
-    def get_smoothed_ids(
-            self, theme_ids_2d: np.ndarray, smoothing_specs: Dict[str, Any]
-    ) -> np.ndarray:
-        """
-        Resolves aliasing and precedence using an explicit set of smoothing rules.
-
-        Args:
-            theme_ids_2d: The raw categorical raster.
-            smoothing_specs: A dictionary of label -> ThemeSmoothingSpec definitions.
-        """
         if theme_ids_2d is None or not np.any(theme_ids_2d):
             return theme_ids_2d
 
-        return self.get_smooth_theme(
-            theme_ids_2d, self.label_to_id, smoothing_specs
+        return self.get_smoothed_theme(
+            theme_ids_2d=theme_ids_2d,
+            specs_by_id=self._runtime_specs_by_id,
         )
 
     @staticmethod
-    def get_smooth_theme(theme_2d, label_to_id, smoothing_profiles):
-        """
-        The 'Melt and Grow' Algorithm.
-        Processes categories in order of precedence to resolve spatial collisions.
-        """
-        theme = median_filter(theme_2d, size=3)
-        present_ids = np.unique(theme)
+    def get_smoothed_theme(
+        theme_ids_2d: np.ndarray,
+        specs_by_id: Mapping[int, ThemeRuntimeSpec],
+    ) -> np.ndarray:
+        """Smooth categorical theme IDs with hole removal and blur-threshold cleanup."""
+        if theme_ids_2d is None or not np.any(theme_ids_2d):
+            return theme_ids_2d
 
-        smoothed = theme.copy()
-        background_mask = (theme == 0)
-        all_labels = list(label_to_id.keys())
+        cleaned = median_filter(theme_ids_2d, size=MEDIAN_FILTER_SIZE)
+        out = np.full_like(cleaned, BACKGROUND_THEME_ID)
 
-        # Determine processing order based on explicit precedence settings
-        def get_prof(lbl):
-            return smoothing_profiles.get(lbl, smoothing_profiles.get("_default_"))
+        present_ids = [int(v) for v in np.unique(cleaned) if int(v) != BACKGROUND_THEME_ID]
+        if not present_ids:
+            return cleaned
 
-        # Low precedence categories are processed (and potentially overwritten) first
-        order = sorted(all_labels, key=lambda l: get_prof(l).precedence if get_prof(l) else 0)
+        support_fields: list[np.ndarray] = []
+        support_ids: list[int] = []
 
-        for label in order:
-            val = label_to_id.get(label)
-            if val not in present_ids or val == 0:
+        for theme_id in present_ids:
+            spec = specs_by_id.get(theme_id)
+            if spec is None or not spec.enabled:
                 continue
 
-            prof = get_prof(label)
-            if not prof: continue
+            sigma = float(spec.smoothing_radius)
+            mask = cleaned == theme_id
 
-            # Create a soft probability ramp (Melt)
-            mask = (theme == val)
+            # 1. Fill enclosed holes inside the category
             mask = binary_fill_holes(mask)
-            melted = gaussian_filter(mask.astype(np.float32), sigma=prof.smoothing_radius)
 
-            # Resolve which lower-precedence pixels can be stolen by this category
-            can_overwrite = np.zeros_like(background_mask, dtype=bool)
-            for other_label in all_labels:
-                other_val = label_to_id.get(other_label)
-                if other_val is None or other_val == val: continue
-                if get_prof(other_label).precedence < prof.precedence:
-                    can_overwrite |= (smoothed == other_val)
+            if sigma <= 0.0:
+                support = mask.astype(np.float32)
+            else:
+                support = gaussian_filter(mask.astype(np.float32), sigma=sigma)
 
-            # Expand the category (Grow) based on the melted threshold
-            grow_mask = (melted > prof.expansion_weight) & (background_mask | can_overwrite)
-            smoothed[grow_mask] = val
+            support_fields.append(support)
+            support_ids.append(theme_id)
 
-        return smoothed
+        if not support_fields:
+            return cleaned
 
+        stacked = np.stack(support_fields, axis=0)
+        winner_index = np.argmax(stacked, axis=0)
+        winner_support = np.max(stacked, axis=0)
 
-def refine_organic_signal(mask, blur_px, noise_amp, noise_id, contrast, max_opacity, ctx, name):
+        winner_ids = np.asarray(support_ids, dtype=cleaned.dtype)
+        claim_mask = winner_support >= CLAIM_THRESHOLD
+
+        out[claim_mask] = winner_ids[winner_index[claim_mask]]
+        return out
+
+def refine_organic_signal_b(
+    mask: np.ndarray,
+    *,
+    spec: ThemeRuntimeSpec,
+    ctx: Any,
+) -> np.ndarray:
     """
+    Refine a theme mask using ThemeRuntimeSpec parameters.
+        NOTE: A and B are identical except A uses the A pattern for passing parameters and
+    B uses the B pattern
+    """
+    signal = mask.astype(np.float32)
+
+    if spec.blur_px > 0.0:
+        signal = gaussian_filter(signal, sigma=spec.blur_px)
+
+    if spec.noise_amp > 0.0:
+        noise_provider = ctx.noises.get(spec.noise_id)
+        if noise_provider is None:
+            raise KeyError(
+                f"Missing noise provider '{spec.noise_id}' for theme '{spec.label}'."
+            )
+
+        noise = np.squeeze(noise_provider.window_noise(ctx.window)).astype(np.float32)
+
+        # Example noise modulation: centered around 1.0
+        signal *= 1.0 + ((noise - 0.5) * 2.0 * spec.noise_amp)
+
+    signal = np.clip(signal, 0.0, 1.0)
+
+    if spec.contrast != 1.0:
+        signal = np.power(signal, spec.contrast)
+
+    return np.clip(signal * spec.max_opacity, 0.0, 1.0)
+
+def refine_organic_signal_a(mask, blur_px, noise_amp, noise_id, contrast, max_opacity, ctx, name):
+    """
+    NOTE: A and B are identical except A uses the A pattern for passing parameters and
+    B uses the B pattern
     Transforms a clinical GIS mask into a naturalized artistic factor.
 
     This is the core 'Artistic Brush' of the engine. It supports two modes:
