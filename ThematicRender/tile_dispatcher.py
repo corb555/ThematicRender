@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from queue import Empty
 from typing import Iterable, Dict, List, Callable, Optional, TypeAlias, Tuple
 
@@ -7,12 +8,18 @@ from rasterio.windows import Window
 from ThematicRender.engine_resources import EngineResources
 from ThematicRender.io_manager import get_read_geometry
 from ThematicRender.ipc_packets import RenderPacket, DriverBlockRef, BlockReadPacket, WindowRect, \
-    Envelope, Op, DispatchResult
+    Envelope, Op
 from ThematicRender.keys import DriverKey
 from ThematicRender.render_config import JobManifest
 
 EnvelopeHandler: TypeAlias = Callable[[Envelope], None]
 
+
+@dataclass(slots=True)
+class DispatchResult:
+    tile_id: Optional[int]
+    read_packets: List[Envelope]
+    render_packet: Optional[RenderPacket]
 
 class TileDispatcher:
     """Manage per-tile block state for the active render job.

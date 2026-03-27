@@ -13,11 +13,14 @@ WindowRect: TypeAlias = tuple[int, int, int, int]
 WKR_TIMEOUT = 7.0
 ORCH_TIMEOUT = 10.0
 
-@dataclass(frozen=True, slots=True)
-class DriverBlockRef:
-    slot_id: int
-    data_h_w: Tuple[int, int]
-    inner_slices: Optional[Tuple[slice, slice]] = None
+SEV_FATAL = 0  # Triggers a  system Shutdown.
+SEV_CANCEL = 1  # Triggers a Job Cancellation.
+SEV_WARNING = 2  # Job continues. Logged and sent to the client
+
+# Shared Mem Special Job Ids
+JOB_ID_SHUTTING_DOWN = "-3"
+JOB_ID_JOB_CANCELLED = "-2"
+JOB_ID_IDLE   = "-1"
 
 
 # Message Operations
@@ -42,6 +45,14 @@ class Envelope:
     """The standard container for all Queue communications."""
     op: Op
     payload: Any = None
+
+
+@dataclass(frozen=True, slots=True)
+class DriverBlockRef:
+    slot_id: int
+    data_h_w: Tuple[int, int]
+    inner_slices: Optional[Tuple[slice, slice]] = None
+
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,18 +107,6 @@ class BlockLoadedPacket:
 @dataclass(frozen=True, slots=True)
 class JobDonePacket:
     job_id: str
-
-
-@dataclass(slots=True)
-class DispatchResult:
-    tile_id: Optional[int]
-    read_packets: List[Envelope]
-    render_packet: Optional[RenderPacket]
-
-
-SEV_FATAL = 0  # Triggers a  system Shutdown.
-SEV_CANCEL = 1  # Triggers a Job Cancellation.
-SEV_WARNING = 2  # Job continues. Logged and sent to the client
 
 
 @dataclass(frozen=True, slots=True)

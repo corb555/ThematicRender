@@ -6,6 +6,7 @@ import traceback
 from typing import Dict, Any, Tuple, Optional
 
 import numpy as np
+from python_utils.types import ExceptionsType
 import rasterio
 from rasterio.windows import Window
 from scipy.ndimage import gaussian_filter
@@ -35,29 +36,33 @@ def load_worker_job_ctx(job_id: str, shm_store: JobContextStore) -> WorkerContex
 
 
 def render_loop(work_q, writer_q, status_q, shm_name, out_pool, pool_map):
-    section = "RENDER"
+    section = "RENDER_LOOP"
     setproctitle.setproctitle(multiprocessing.current_process().name)
 
     shm_store = JobContextStore(name=shm_name)
     ctx: Optional[WorkerContext] = None
     workspace = RenderWorkspace()
 
-    try:
-        while True:
-            envelope = work_q.get()
-            packet = envelope.payload
+    while True:
+        envelope = work_q.get()
+        packet = envelope.payload
+        section = "sync ctx"
 
-            ctx = sync_ctx_for_packet(
-                ctx=ctx, packet_job_id=packet.job_id, shm_store=shm_store,
-                load_ctx=load_worker_job_ctx, err_prefix="WORKER"
-            )
-            if ctx is None: continue
+        #  STATE TRANSLATION: Sync SHM and check for Cancel/Idle/Stale
+        ctx = sync_ctx_for_packet(
+            ctx=ctx, packet_job_id=packet.job_id, shm_store=shm_store,
+            load_ctx=load_worker_job_ctx, err_prefix="WORKER"
+        )
+        if ctx is None: continue
 
-            workspace.sync_to_context(ctx)
+        # ENGINE TRANSLATION: Rebuild math engines if config changed
+        workspace.sync_to_context(ctx)
 
+        try:
             match envelope.op:
                 case Op.RENDER_TILE:
                     try:
+                        section = "rnder task"
                         result = render_task(
                             packet=packet, ctx=ctx, workspace=workspace, out_pool=out_pool,
                             pool_map=pool_map
@@ -65,18 +70,12 @@ def render_loop(work_q, writer_q, status_q, shm_name, out_pool, pool_map):
                         writer_q.put(Envelope(op=Op.WRITE_TILE, payload=result))
                     except (ValueError, OSError, KeyError) as e:
                         # SEV_CANCEL: Notify Orch, but STAY in the while loop
-                        payload = ErrorPacket(
-                            job_id= packet.job_id,tile_id= -1,section= section,severity= SEV_CANCEL,
-                            message= f"{section} {e}"
-                            )
+                        payload = ErrorPacket(job_id= packet.job_id,tile_id= -1,section="wrn",severity= SEV_CANCEL,message= f"Render {section} err='{e}'")
                         send_error(status_q, payload)
                     except Exception as e:
                         # SEV_FATAL: Notify Orch and EXIT the process
                         stack_trace_str = traceback.format_exc()
-
-                        payload = ErrorPacket(
-                            packet.job_id, -1, section, SEV_FATAL, f"{section} Error {e} {stack_trace_str}"
-                            )
+                        payload = ErrorPacket(job_id= packet.job_id,tile_id= -1,section="excep",severity= SEV_FATAL,message= f"Render {section} Error {e} {stack_trace_str}")
                         send_error(status_q, payload)
                         break
 
@@ -91,28 +90,22 @@ def render_loop(work_q, writer_q, status_q, shm_name, out_pool, pool_map):
                 # UNKNOWN MESSAGES
                 case _:
                     payload = ErrorPacket(
-                        packet.job_id, -1, section, SEV_CANCEL, f"{section} Unknown message rcvd"
-                        )
+                        job_id=packet.job_id,tile_id= -1, section=section, severity=SEV_FATAL,message= f"{section} Unknown message rcvd")
                     send_error(status_q, payload)
-    except ValueError as e:
-        print(f"{section} RENDER ERROR {e}")
-        payload = ErrorPacket(
-            job_id=packet.job_id, tile_id=-1, section=section, severity=SEV_CANCEL,
-            message=f"Warning: {e}"
-            )
-        send_error(status_q, payload)
-    except Exception as e:
-        print(f"{section} RENDER Exception {e}")
-        payload = ErrorPacket(
-            job_id=packet.job_id, tile_id=-1, section=section, severity=SEV_FATAL,
-            message=f"Fatal: {e}"
-            )
-        send_error(status_q, payload)
-        sys.exit(1)
+        except ValueError as e:
+            print(f"{section} RENDER1 ERROR {e}")
+            payload = ErrorPacket(job_id=packet.job_id, tile_id= -1, section=section, severity=SEV_CANCEL,message=f"Warning: {e}" )
+            send_error(status_q, payload)
+        except MemoryError as e:
+            print(f"{section} RENDER2 Exception {e}")
+            payload = ErrorPacket(
+                job_id=packet.job_id, tile_id= -1, section=section, severity=SEV_FATAL,message=f"Fatal: {e}")
+            send_error(status_q, payload)
+            sys.exit(1)
 
 
 def render_task(*, packet, ctx, workspace, out_pool, pool_map):
-    section = "RENDER"
+    section = "RENDER_TASK"
 
     # EXTRACT DATA from SHM and set up the spatial compute window
     data_2d, masks_2d, compute_window, h, w = _prepare_compute_context(packet, ctx, pool_map)
@@ -170,8 +163,9 @@ def render_task(*, packet, ctx, workspace, out_pool, pool_map):
     except Exception as e:
         # If we fail HERE, the Writer will never see this slot.
         # We must release it ourselves before re-raising the error.
+        print(f"render out_pool err {e}")
         out_pool.release(out_slot)
-        raise e
+        raise
 
 
 class RenderWorkspace:
@@ -185,57 +179,73 @@ class RenderWorkspace:
 
     def sync_to_context(self, ctx: WorkerContext):
         res = ctx.resources
+        needs_style_sync = False
 
-        # GEOGRAPHY CHANGED
-        if res.geography_hash != self.current_geography_hash or self.current_geography_hash is None:
-            # print(f"🔄 [Workspace] GEOGRAPHY CHANGE DETECTED: {res.geography_hash[:8]}")
-            self.current_geography_hash = res.geography_hash
-
-        # LOGIC CHANGED
+        # 1. LOGIC/GEOGRAPHY
         if res.logic_hash != self.current_logic_hash or self.current_logic_hash is None:
-            # print(f"⚙️ [Workspace] HASH change detected sync_to_context Hash: {res.logic_hash[
-            # :8]}")
-
-            # 1. Create the Library
             noise_lib = NoiseLibrary(ctx.render_cfg, ctx.render_cfg.noises)
-
-            # 2. Map the existing SHM buffers into this process
-            # This connects 'self._tile' to the tr_noise_... segments
             noise_lib.attach_providers_shm()
 
-            # 3. Rebuild using the now-attached library
             self.factor_eng = FactorEngine(
-                ctx.render_cfg, ctx.themes, noise_lib,  # Pass the attached library
+                ctx.render_cfg, ctx.themes, noise_lib,
                 ctx.render_cfg.factors, res, None
             )
-            self.current_logic_hash = res.logic_hash  # print("HASH rebuilt factor_eng")
+            self.current_logic_hash = res.logic_hash
+            needs_style_sync = True # Force theme sync for new engine
 
-        # 3. STYLE CHANGED (QML Colors / Ramps / Pipeline)
-        # This will trigger if you save the QML file OR change a surface in YAML
-        if res.style_hash != self.current_style_hash:
-            # print(f" [Workspace] Style/Color Hash Change: {res.style_hash[:8]}")
-
-            # Refresh the Surface Engine (handles Ramps)
+        # 2. STYLE
+        if res.style_hash != self.current_style_hash or self.current_style_hash is None:
             self.surface_eng = SurfaceEngine(ctx.render_cfg)
-
-            # Re-load the QML and Build the LUT
-            # This ensures the new QML colors are picked up instantly
-            self.setup_style_state(ctx)
             self.current_style_hash = res.style_hash
+            needs_style_sync = True
 
-            # 4. Final local init
+        # 3. CONSOLIDATED SYNC
+        if needs_style_sync:
             self.setup_style_state(ctx)
 
-    def setup_style_state(self, ctx: WorkerContext):
-        """Worker-local initialization (LUT build and Ramp loading)."""
+    def _rebuild_logic_stack(self, ctx):
+        """Creates fresh engines for a new logic state."""
+        noise_lib = NoiseLibrary(ctx.render_cfg, ctx.render_cfg.noises)
+        noise_lib.attach_providers_shm()
+
+        self.factor_eng = FactorEngine(
+            ctx.render_cfg, ctx.themes, noise_lib,
+            ctx.render_cfg.factors, ctx.resources, None
+        )
+
+    def _rebuild_style_stack(self, ctx):
+        """Methodically pushes new settings into the existing engines."""
+        # A. Hydrate the Theme Registry instance from the context
+        # This executes the 'DEBUG build runt' logic
         ctx.themes.load_metadata(ctx.render_cfg)
         ctx.themes.load_theme_style()
-        if hasattr(self.factor_eng, 'theme_reg'):
-            self.factor_eng.theme_reg.load_metadata(ctx.render_cfg)
-            self.factor_eng.theme_reg.load_theme_style()
 
+        # B. THE KEY FIX: PUSH the new context into the Factor Engine
+        # This kills the 'Ghost' references.
+        if self.factor_eng:
+            self.factor_eng.update_render_context(ctx.render_cfg, ctx.themes)
+
+        # C. Rebuild Surface Engine (always fresh for style changes)
+        self.surface_eng = SurfaceEngine(ctx.render_cfg)
         self.surface_eng.load_surface_ramps(ctx.resources)
 
+    def setup_style_state(self, ctx: WorkerContext):
+        """
+        Synchronizes the persistent engines with the current job's context.
+        """
+        # 1. HYDRATE the specific Registry instance provided by the current job.
+        ctx.themes.load_metadata(ctx.render_cfg)
+        ctx.themes.load_theme_style()
+
+        # 2. PUSH the new worldview into the Factor Engine.
+        if self.factor_eng:
+            # Re-link the engine to the fresh unpickled registry and config.
+            self.factor_eng.update_render_context(ctx.render_cfg, ctx.themes)
+
+        # 3. SYNC the Surface Engine.
+        # Ensure the ramp synthesis logic is using the current job's resource paths.
+        if self.surface_eng:
+            self.surface_eng.load_surface_ramps(ctx.resources)
 
 def _prepare_compute_context(packet: RenderPacket, ctx: WorkerContext, pool_map):
     """

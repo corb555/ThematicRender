@@ -240,49 +240,38 @@ class SharedMemoryPool:
             s.close()
             s.unlink()
 
-
 class SlotRegistry:
-    """
-    Implements a Pinned Spatial Cache with a Fill-Once policy.
-
-    Attributes:
-        context_id: A unique hash representing the regional file set. If this changes,
-                   the static cache is invalidated.
-    """
-
     def __init__(
             self, pool_map: Dict[DriverKey, SharedMemoryPool], context_id: str,
-            static_ratio: float = 0.75
+            static_count: int
     ):
+        self.is_cold = True
         self.pool_map = pool_map
         self.context_id = context_id
         self.is_warm_hit_detected = False
         self.hits = 0
         self.misses = 0
-        self.transit_demands = 0 # New counter
+        self.transit_demands = 0
 
-        # (DriverKey, Window_Tuple) -> slot_id
-        # These mappings are "Frozen" once assigned.
         self.static_cache = {k: {} for k in pool_map.keys()}
-
-        # Track active users of a slot (primarily for Transit safety)
         self.ref_counts = {k: collections.defaultdict(int) for k in pool_map.keys()}
 
-        # Partition indices for every pool
         self.static_available = {}
         self.transit_indices = {k: set() for k in pool_map.keys()}
 
         for key, pool in pool_map.items():
-            num_static = int(pool.slots * static_ratio)
-            # Take indices from the pool
+            # Use the explicit count passed from the Orchestrator
+            # (Ensuring we don't exceed actual pool capacity)
+            actual_static = min(static_count, pool.slots - 1)
+
+            # Drain all indices to partition them
             all_indices = [pool.acquire(block=False) for _ in range(pool.slots)]
 
-            # Divide indices
-            self.static_available[key] = sorted(all_indices[:num_static])
-            transits = all_indices[num_static:]
+            # Partition
+            self.static_available[key] = sorted(all_indices[:actual_static])
+            transits = all_indices[actual_static:]
 
             # Put transit indices back into the pool's shared queue
-            # so they can be acquired/released normally.
             for idx in transits:
                 self.transit_indices[key].add(idx)
                 pool.release(idx)

@@ -3,6 +3,8 @@ import pickle
 import struct
 from typing import Optional
 
+from ThematicRender.ipc_packets import JOB_ID_JOB_CANCELLED, JOB_ID_SHUTTING_DOWN
+
 
 class JobContextStore:
     """
@@ -13,6 +15,10 @@ class JobContextStore:
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
     def __init__(self, name: Optional[str] = None, size: int = 4 * 1024 * 1024):
+        self.len_wtr_bin = 0
+        self.len_rndr_bin = 0
+        self.len_r_bin = 0
+
         if name:  # Worker Side: Attach
             self.shm = SharedMemory(name=name)
             self.owner = False
@@ -53,15 +59,49 @@ class JobContextStore:
         self.shm.buf[w_start: w_start + len(rndr_bin)] = rndr_bin
         self.shm.buf[wr_start: wr_start + len(wtr_bin)] = wtr_bin
 
-        # 4. PREPARE THE HEADER
-        header = struct.pack(
-            self.HEADER_FORMAT, job_id.encode('utf-8')[:64], len(r_bin), len(rndr_bin), len(wtr_bin)
-        )
+        self.len_r_bin = len(r_bin)
+        self.len_rndr_bin = len(rndr_bin)
+        self.len_wtr_bin = len(wtr_bin)
 
         # 5. THE "COMMIT" STEP
         # We overwrite the first HEADER_SIZE bytes in a single assignment.
         # This acts as the signal to all workers that the new data is ready.
+        self._write_header(job_id, len(r_bin), len(rndr_bin), len(wtr_bin))
+
+    def _write_header(
+        self,
+        job_id: str,
+        len_r: Optional[int] = None,
+        len_rndr: Optional[int] = None,
+        len_wtr: Optional[int] = None
+    ):
+        """
+        Updates the internal state and performs the atomic SHM commit.
+        If a length is None, it persists the last known value.
+        """
+        # Update internal state only if new values are provided
+        if len_r is not None:    self.len_r_bin = len_r
+        if len_rndr is not None: self.len_rndr_bin = len_rndr
+        if len_wtr is not None:  self.len_wtr_bin = len_wtr
+
+        # Pack the header using the (potentially updated) internal state
+        header = struct.pack(
+            self.HEADER_FORMAT,
+            job_id.encode('utf-8')[:64],
+            self.len_r_bin,
+            self.len_rndr_bin,
+            self.len_wtr_bin
+        )
+
+        # THE ATOMIC COMMIT
+        # Overwriting the header slice in one operation signals workers
         self.shm.buf[:self.HEADER_SIZE] = header
+
+    def set_job_cancel(self):
+        self._write_header(JOB_ID_JOB_CANCELLED)
+
+    def set_shutdown(self):
+        self._write_header(JOB_ID_SHUTTING_DOWN)
 
     def get_job_id(self):
         """

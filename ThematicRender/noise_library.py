@@ -155,7 +155,7 @@ class NoiseLibrary:
             provider.close()
 
     def get(self, noise_id: str) -> NoiseProvider:
-        return self.providers[noise_id]
+        return self.providers.get (noise_id, None)
 
     def cleanup(self, unlink: bool = False):
         for provider in self.providers.values():

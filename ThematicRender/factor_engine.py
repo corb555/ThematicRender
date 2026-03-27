@@ -5,6 +5,8 @@ from typing import Protocol, Callable, Mapping, Any, List
 import numpy as np
 from rasterio.windows import Window
 
+from ThematicRender.render_config import RenderConfig
+from ThematicRender.theme_registry import ThemeRegistry
 from ThematicRender.utils import print_once
 
 
@@ -40,6 +42,11 @@ class FactorEngine:
 
             # print(f"Registered factor {spec.name}")
             self._compiled.append((spec, fn))
+
+    def update_render_context(self, render_cfg: 'RenderConfig', themes: 'ThemeRegistry'):
+        """Methodically re-binds the engine to the current job's state."""
+        self.cfg = render_cfg
+        self.themes = themes
 
     def generate_factors(
             self, data_2d: dict, masks_2d: dict, window: Window, anchor_key: Any
@@ -81,7 +88,7 @@ class FactorEngine:
             lib_ctx.spec = spec
 
             try:
-                # global override for debugging - replaces factor with all ones
+                # This is a global override for debugging - replaces factor with all ones
                 override_target = self.cfg.get_global("override_factor")
                 if override_target == spec.name:
                     res = np.ones((target_h, target_w, 1), dtype="float32")
@@ -105,8 +112,8 @@ class FactorEngine:
                 # Store the standardized factor for use in the compositor or by downstream factors
                 factors[spec.name] = res.astype("float32")
 
-            except MemoryError as e:
-                raise ValueError(f"\n❌ Factor Engine Error: [{spec.name}] {e}")
+            except Exception as e:
+                raise ValueError(f"\n Factor Engine: [{spec.name}] {e}")
 
         return factors
 

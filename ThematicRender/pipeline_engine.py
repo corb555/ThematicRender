@@ -6,8 +6,11 @@ import json
 from pathlib import Path
 from queue import Empty
 import time
+from types import SimpleNamespace
 from typing import List, Callable, Optional, TypeAlias, Tuple, Counter
+import traceback
 
+from coverage.inorout import file_and_path_for_module
 from rasterio.windows import Window
 
 from ThematicRender.command_proxy import CommandProxy
@@ -20,11 +23,12 @@ from ThematicRender.ipc_packets import (Envelope, Op, JobDonePacket, ErrorPacket
 from ThematicRender.job_control import JobControl
 from ThematicRender.noise_library import NoiseLibrary
 from ThematicRender.reader_task import ReaderContext
-from ThematicRender.render_config import derive_resources, JobManifest, RenderConfig
+from ThematicRender.render_config import derive_resources, JobManifest, RenderConfig, \
+    analyze_pipeline
 from ThematicRender.render_task import WorkerContext
 from ThematicRender.surface_engine import SurfaceEngine
 from ThematicRender.system_config import SystemConfig
-from ThematicRender.tile_dispatcher import TileDispatcher
+from ThematicRender.tile_dispatcher import TileDispatcher, DispatchResult
 from ThematicRender.writer_task import WriterContext
 
 EnvelopeHandler: TypeAlias = Callable[[Envelope], None]
@@ -89,7 +93,6 @@ class PipelineOrchestrator:
         self.running = True
 
     def run_loop(self) -> None:
-            import traceback
 
             while self.running:
                 try:
@@ -136,6 +139,7 @@ class PipelineOrchestrator:
 
                     # D. Exit the loop
                     self.running = False
+
     def _handle_job_request(self, envelope: Envelope) -> None:
         """Queue a new job request and start it if no job is active."""
         data = envelope.payload
@@ -174,20 +178,63 @@ class PipelineOrchestrator:
         json_job_req = self.pending_jobs.pop(0)
 
         try:
-            # 1. Resolve request into a manifest
+            # 1. RESOLVE: Parse YAML and build the manifest
             job_manifest = self.resolver.create_job_manifest(json_job_req)
+
+            # 2. HYDRATE: Ensure local engines are ready for the audit
+            # We need the engines to be 'Warm' so analyze_pipeline can look at
+            # the FactorEngine specs and SurfaceEngine registries.
+            self._hydrate_logic(job_manifest.render_cfg, job_manifest.resources)
+
+            # 3. AUDIT: Perform the Deep Logical Audit
+            # Note: We pass a mock 'ctx' or the manifest that analyze_pipeline expects
+            #has_errors, report_md, raw_errors = analyze_pipeline(self._build_audit_context(job_manifest))
+            has_errors = False
+            # 4. THE GATEKEEPER: Check the error flag
+            if has_errors:
+                # Create a concise summary of the first two errors
+                error_summary = "\n".join([f"• {err}" for err in raw_errors[:4]])
+
+                # Add a counter if there are more than two errors
+                if len(raw_errors) > 4:
+                    error_summary += f"\n...and {len(raw_errors) - 4} more errors."
+
+                # Construct the final message
+                final_msg = f"❌ Pipeline Audit Failed:\n{error_summary}"
+                print(f"[Orchestrator] Job '{job_manifest.job_id}' - {final_msg}")
+
+                # Send the audit failure to the Client
+                self._send_to_client({
+                    "msg": "error",
+                    "job_id": job_manifest.job_id,
+                    "severity": 1, # SEV_CANCEL
+                    "report": report_md, # The full high-fidelity Markdown
+                    "message": final_msg # The concise plain-text summary
+                })
+
+                # Abort and move to next job
+                self.job_control.clear_job()
+                self._start_next_job()
+                return False
+
+            # 5. EXECUTE: If audit passes, proceed
+            print(f"✅ [Orchestrator] Pipeline Audit Passed. Starting Job '{job_manifest.job_id}'...")
         except Exception as e:
-            # SEV_CANCEL equivalent: Configuration or Input Error
+            # 1. PRINT THE FULL STACK TRACE TO CONSOLE
+            # This is for YOU (the dev) to see in the terminal
+            traceback.print_exc()
+
+            # 2. LOG THE SUMMARY LINE
             print(f"⚠️ [ORCHESTRATOR] Invalid Job Error : {e}")
+
+            # 3. NOTIFY THE CLIENT
             self._send_to_client(
                 {
-                    "msg": "error", "job_id": -1, "severity": 1,  # SEV_CANCEL
+                    "msg": "error", "job_id": -1, "severity": 1,
                     "message": f"⚠️ Job Initialization Failed: {str(e)}"
                 }
             )
             self.job_control.clear_job()
-
-            # Try to start the next pending job if there is one
             self._start_next_job()
             return False
 
@@ -265,6 +312,7 @@ class PipelineOrchestrator:
                     "message": f"⚠️ Job Initialization Failed: {str(exc)}"
                 }
             )
+            self.eng_resources.cancel_active_job()
             self.job_control.clear_job()
 
             # Try to start the next pending job if there is one
@@ -273,7 +321,6 @@ class PipelineOrchestrator:
 
         except Exception as exc:
             # SEV_FATAL: Something crashed in the Orchestrator code itself
-            import traceback
             traceback.print_exc()
             self._send_to_client(
                 {
@@ -481,7 +528,7 @@ class PipelineOrchestrator:
             self._finalize_job()
             return
 
-        dispatch_result = self.dispatcher.dispatch_next_tile(self.job_control.job_id)
+        dispatch_result : DispatchResult = self.dispatcher.dispatch_next_tile(self.job_control.job_id)
         if dispatch_result.tile_id is None:
             return
 
@@ -499,8 +546,15 @@ class PipelineOrchestrator:
         self._handle_shutdown(envelope)
 
     def _handle_job_cancel(self, envelope: Envelope) -> None:
-        # TODO Implement
-        print(f"⚠️ [Orchestrator] Job Cancel not implemented: {envelope.op}")
+        print(f"⚠️ [Orchestrator] Job Cancel : {envelope.op}")
+        # 1. Authoritative SHM Flip (Interruption)
+        self.eng_resources.cancel_active_job()
+
+        # 2. Pipeline Signaling (Cleanup)
+        self.send_to_worker('writer_q', Envelope(op=Op.JOB_CANCEL))
+
+        # 3. Logic cleanup
+        self.job_control.clear_job()
 
     def _handle_wr_abort(self, envelope: Envelope) -> None:
         # TODO Implement 2.2
@@ -526,8 +580,8 @@ class PipelineOrchestrator:
         # 1. Log to Orchestrator Console
         sev_label = {0: "FATAL", 1: "CANCEL", 2: "WARNING"}.get(sev)
         print(
-            f"❌ [{sev_label}] {payload.section}  failure "
-            f"(Tile: {payload.tile_id}, Job: '{job_id}'): {payload.message}"
+            f"Pipeline received: Sev: {sev_label} From: {payload.section}   "
+            f"Job: '{job_id}' Error: {payload.message}"
         )
 
         # 2. Forward to Client Proxy
@@ -554,8 +608,10 @@ class PipelineOrchestrator:
                 # Reclaim Shared Memory Slots
                 self.dispatcher.abort_job()
 
+                self.eng_resources.cancel_active_job()
+
                 # Local cleanup and state reset
-                self._unlink_file_if_exists(self.job_control.temp_out_path)
+                # tODO self._unlink_file_if_exists(self.job_control.temp_out_path)
                 self.job_control.clear_job()
 
                 # Note: We do NOT automatically call _start_next_job() here  # to allow the
@@ -576,6 +632,20 @@ class PipelineOrchestrator:
 
         self.running = False
         print("🛑 [Orchestrator] Shutting Down.")
+
+    def _build_audit_context(self, manifest: JobManifest):
+            """Creates a lightweight container for the analyze_pipeline function."""
+            return SimpleNamespace(
+                render_cfg=manifest.render_cfg,
+                pipeline=manifest.render_cfg.pipeline,
+                factors_engine=self.factor_eng,
+                surfaces_engine=self.surface_eng,
+                eng_resources=self.eng_resources,
+                theme_registry=self.theme_reg,
+                anchor_key=manifest.resources.anchor_key,
+                surface_inputs=manifest.resources.drivers.keys()
+            )
+
 
     def send_to_worker(self, queue_attr: str, envelope: Envelope) -> None:
         """
@@ -677,6 +747,7 @@ class JobResolver:
         config_path = Path(params.get("config_path")).expanduser()
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
+        print("=" * 60)
         print(f"\n\nNEW JOB REQUEST - create_job_manifest for Job '{job_id}'")
 
         # 2. Load and resolve render configuration
@@ -692,33 +763,34 @@ class JobResolver:
             raise ValueError(f"YAML Syntax or Path error: {str(e)}")
 
         # 3. GENERATE HASHES for Hot-Reloading
-
-        # LOGIC HASH: Representing Factor math, logic parameters, and driver specs
-        logic_data = {
-            "factors": render_cfg.raw_defs.get("factors", {}),
-            "factor_specs": render_cfg.raw_defs.get("factor_specs", {}),
-            "drivers": render_cfg.raw_defs.get("drivers", {}),
-            "driver_specs": render_cfg.raw_defs.get("driver_specs", {})
-        }
-        logic_hash = self.generate_content_hash(logic_data)
-
+        # TODO - *** Audit whether this matches the config file!!!
         # 1. Capture QML Freshness
         qml_path = render_cfg.path("theme_qml")
 
         # Get timestamp (0 if file is missing)
         qml_mtime = qml_path.stat().st_mtime if qml_path and qml_path.exists() else 0
 
-        # 2. Inject into Style Data before hashing
+        # 2. STYLE HASH
         style_data = {
             "surfaces": render_cfg.raw_defs.get("surfaces", {}),
             "pipeline": render_cfg.raw_defs.get("pipeline", []),
             "theme_smoothing": render_cfg.raw_defs.get("theme_smoothing_specs", {}),
             "surface_modifier_specs": render_cfg.raw_defs.get("surface_modifier_specs", {}),
-            "qml_mtime": qml_mtime
+            "qml_mtime": qml_mtime,
+            "theme_render": render_cfg.raw_defs.get("theme_render", {}),
         }
-        style_hash = self.generate_content_hash(style_data)
 
-        # TODO noise_profiles is not hashed
+        # LOGIC HASH: Representing Factor math, logic parameters, and driver specs
+        logic_data = {
+            "factors": render_cfg.raw_defs.get("factors", {}),
+            "factor_specs": render_cfg.raw_defs.get("factor_specs", {}),
+            "drivers": render_cfg.raw_defs.get("drivers", {}),
+            "driver_specs": render_cfg.raw_defs.get("driver_specs", {}),
+            "noise_profiles": render_cfg.raw_defs.get("noise_profiles", {})
+        }
+
+        style_hash = self.generate_content_hash(style_data)
+        logic_hash = self.generate_content_hash(logic_data)
 
         # 4. Resolve Resources and Geography
         resources = derive_resources(render_cfg=render_cfg)

@@ -40,45 +40,63 @@ def get_payload_job_id(payload: Any) -> str:
         raise RuntimeError(f"Payload does not contain a valid job_id: {payload!r}")
     return job_id
 
-
 def sync_ctx_for_packet(
         *, ctx: Optional[CTX], packet_job_id: str, shm_store: JobContextStore,
         load_ctx: Callable[[str, JobContextStore], CTX], err_prefix: str, ) -> Optional[CTX]:
     """
     Synchronize local worker context against the authoritative SHM job header.
-
-    Rules:
-    1. If packet job_id != SHM header job_id, the packet is stale -> discard.
-    2. If local ctx is missing or for a different job, reload from SHM.
-    3. Otherwise keep using the current ctx.
-
-    Returns:
-        The synchronized context, or None if the packet is stale and should be discarded.
     """
     shm_job_id = shm_store.get_job_id()
 
+    # --- RULE 0: Authoritative State Check ---
+    # If SHM says we are in a non-active state (Idle=-1, Cancel=-2, Shutdown=-3),
+    # we must immediately stop processing and release resources.
+    try:
+        # Convert to int to check for negative flags
+        state_val = int(shm_job_id)
+        if state_val < 0:
+            if ctx is not None:
+                print(f"🛑 [{err_prefix}] SHM State {state_val} detected. Closing local resources.")
+                ctx.close_local_resources()
+            return None
+    except (ValueError, TypeError):
+        # shm_job_id is a valid string ID (e.g., '36'), proceed normally
+        pass
+
+    # --- RULE 1: Stale Packet Check ---
     if packet_job_id != shm_job_id:
-        # Packet is not for our current job in shmem
-        print(f"*** JOB CONTEXT MISMATCH. Packet Job: {packet_job_id} ShmMem Job: {shm_job_id}")
+        # Packet is from an old job or a different job entirely
         return None
 
+    # --- RULE 2: Context Loading / Reloading ---
     if ctx is None or ctx.job_id != shm_job_id:
         if ctx is not None:
             ctx.close_local_resources()
-        ctx = load_ctx(packet_job_id, shm_store)
-        if hasattr(ctx, 'resources'):
-            res = ctx.resources
-            # print(f"HASH 4 - sync_ctx - NEW load_ctx: logic hash: {res.logic_hash}")
-            if hasattr(res, 'render_cfg'):
-                opa = dot_get(res.render_cfg, "drivers.water.max_opacity")
-                print(f"opacity: {opa}")
-        # else:
-        #    print(f"🔄 [sync_ctx] Reloaded context for {err_prefix} (Job: {ctx.job_id})")
 
+        # Load the new context from SHM
+        ctx = load_ctx(packet_job_id, shm_store)
+
+        # Diagnostic printing (if required)
+        if hasattr(ctx, 'resources') and hasattr(ctx.resources, 'render_cfg'):
+            opa = dot_get(ctx.resources.render_cfg, "drivers.water.max_opacity")
+            if opa is not None:
+                print(f"🔄 [{err_prefix}] Job {packet_job_id} Loaded (Opacity: {opa})")
+
+        # --- THE SAFETY CHECK ---
+        # Before opening files (Rasterio), ensure we didn't just
+        # get cancelled while we were loading the context.
+        final_check_id = shm_store.get_job_id()
+        try:
+            if int(final_check_id) < 0:
+                ctx.close_local_resources()
+                return None
+        except (ValueError, TypeError):
+            pass
+
+        # Now safe to hit the disk/GDAL
         ctx.open_local_resources()
 
     return ctx
-
 
 def close_worker_ctx(ctx: Optional[WorkerContextBase]) -> None:
     """Best-effort cleanup for a worker context."""

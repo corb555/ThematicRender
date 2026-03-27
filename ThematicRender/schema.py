@@ -23,7 +23,6 @@ RENDER_SCHEMA: dict[str, Any] = {
     "surfaces": {"type": "dict", "required": False},
     "theme_render": {"type": "dict", "required": False},
 
-
     # ------------------------------------------------------------------
     # Driver parameter blocks
     # ------------------------------------------------------------------
@@ -34,7 +33,7 @@ RENDER_SCHEMA: dict[str, Any] = {
                 "schema": {
                     "start": {"type": "float", "default": 180.0},
                     "full": {"type": "float", "default": 750.0},
-                    "noise_amp": {"type": "float", "default": 0.2},
+                    "noise_amp": {"type": "float"},
                     "noise_atten_power": {"type": "float", "default": 1.0},
                     "contrast": {"type": "float", "default": 1.0, "min": 0.1},
                 },
@@ -44,7 +43,7 @@ RENDER_SCHEMA: dict[str, Any] = {
                 "type": "dict", "required": False, "default": {}, "schema": {
                     "start": {"type": "float", "default": 0.0},
                     "full": {"type": "float", "default": 86.0},
-                    "noise_amp": {"type": "float", "default": 0.2},
+                    "noise_amp": {"type": "float"},
                     "noise_atten_power": {"type": "float", "default": 1.0},
                     "contrast": {"type": "float", "default": 1.0, "min": 0.1},
                 },
@@ -60,8 +59,8 @@ RENDER_SCHEMA: dict[str, Any] = {
                 "type": "dict", "required": False, "default": {}, "schema": {
                     "start": {"type": "float", "default": 0.0},
                     "full": {"type": "float", "default": 255.0},
-                    "noise_amp": {"type": "float", "default": 0.2},
-                    "noise_atten_power": {"type": "float", "default": 1.0},
+                    "noise_amp": {"type": "float", "default": 0.0},
+                    "noise_atten_power": {"type": "float"},
                 },
             },
 

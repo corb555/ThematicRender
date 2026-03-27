@@ -113,8 +113,8 @@ class FactorLibrary:
         """Aggregate configured thematic categories into a composite alpha."""
         theme_ids = data_2d[DriverKey.THEME]
 
-        # cleanup of categorical IDs
-        theme_ids = lib_ctx.themes.get_smoothed_ids(theme_ids)
+        # smooth the categorical IDs (already done in render_loop
+        #theme_ids = lib_ctx.themes.get_smoothed_ids(theme_ids)
 
         tile_ctx = lib_ctx.themes.build_tile_context(theme_ids)
         composite_alpha = np.zeros(lib_ctx.target_shape, dtype=np.float32)
@@ -132,6 +132,7 @@ class FactorLibrary:
             composite_alpha = np.maximum(composite_alpha, cat_alpha)
 
         return composite_alpha * np.squeeze(masks_2d[DriverKey.THEME])
+
 
     @staticmethod
     @spatial_factor("hillshade")
@@ -253,7 +254,7 @@ class FactorLibrary:
         if target_val is None:
             return np.zeros(lib_ctx.target_shape, dtype="float32")
 
-        # Logic is now generic for any ID in the theme
+        # Logic is  generic for any ID in the theme
         return (theme_ids == target_val).astype("float32")
 
     @staticmethod

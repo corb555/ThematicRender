@@ -5,6 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Optional, Tuple, Set, FrozenSet, List, Dict, Protocol
 
+DEFAULT_BUFFER = "canvas"
 
 class SurfaceKey(StrEnum):
     # Arid Surfaces
@@ -122,7 +123,7 @@ class _BlendSpec:
     output_surface: Optional[SurfaceKey] = None
 
     # Routing
-    buffer: str = "canvas"  # default buffer
+    buffer: str = DEFAULT_BUFFER  # default buffer
     merge_buffer: Optional[str] = None
 
     # Global Signal Processing

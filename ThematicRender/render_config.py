@@ -3,6 +3,7 @@ from __future__ import annotations
 # config_mgr.py
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import (Any, Tuple, Iterable, Set, Dict, List, Optional)
 
 import numpy as np
@@ -63,16 +64,18 @@ class RenderConfig:
         try:
             defs = loader.read(config_file=config_path)
         except Exception as e:
-            raise RenderConfigError(f"YAML Syntax Error in {config_path.name}: {e}")
+            raise ValueError(f"YAML Syntax Error in {config_path.name}: {e}")
 
         print(f"RenderConfig LOADING {config_path}")
-
 
         context = "initialization"
         current_item = "n/a"
 
+        """
+        Flatten the  dictionary into top level attributes
+        """
         try:
-            # 1. NOISE PROFILES
+            # 1. noises
             context = "noise_profiles"
             noises = {}
             for nid, data in defs.get("noise_profiles", {}).items():
@@ -83,7 +86,7 @@ class RenderConfig:
                     seed_offset=int(data.get("seed_offset", 0)), desc=data.get("desc", "")
                 )
 
-            # 2. SURFACE MODIFIER SPECS
+            # 2. modifiers
             context = "surface_modifier_specs"
             modifiers = {}
             for mid, data in defs.get("surface_modifier_specs", {}).items():
@@ -93,7 +96,7 @@ class RenderConfig:
                     noise_id=data["noise_id"], desc=data.get("desc", "")
                 )
 
-            # 3. DRIVER SPECS
+            # 3. driver_specs
             context = "driver_specs"
             driver_specs = {}
             for dname, data in defs.get("driver_specs", {}).items():
@@ -107,7 +110,7 @@ class RenderConfig:
                         ) else None
                 )
 
-            # 4. FACTORS
+            # 4. factors
             context = "factors"
             factors = []
             yaml_factors = {**defs.get("factors", {}), **defs.get("factor_specs", {})}
@@ -123,7 +126,7 @@ class RenderConfig:
                     )
                 )
 
-            # 5. SURFACES
+            # 5. surfaces
             context = "surfaces"
             surfaces = []
             for sname, data in defs.get("surfaces", {}).items():
@@ -140,11 +143,13 @@ class RenderConfig:
                     )
                 )
 
-            # 6. THEMES
+            # 6. theme_render
             theme_render=defs.get("theme_render", {})
+
+            # 6. theme_smoothing_specs
             theme_smoothing_specs=defs.get("theme_smoothing_specs", {})
 
-            # 6. BLEND PIPELINE
+            # 6. pipeline
             context = "pipeline"
             pipeline = []
             for idx, p_def in enumerate(defs.get("pipeline", [])):
@@ -171,11 +176,11 @@ class RenderConfig:
             )
 
         except KeyError as e:
-            raise RenderConfigError(
+            raise ValueError(
                 f"Missing required field in [{context}] -> '{current_item}': {e}"
                 )
         except Exception as e:
-            raise RenderConfigError(f"Logic error in [{context}] item '{current_item}': {e}")
+            raise ValueError(f"Logic error in [{context}] item '{current_item}': {e}")
 
     def resolve_paths(self, prefix: str, build_dir: Path, output_file: str) -> None:
         """Finalizes file dictionary and validates that all inputs exist on disk."""
@@ -335,7 +340,6 @@ def _require_comp_ops(pipeline_list: list[_BlendSpec], required_ops: set[str]) -
                                                                      "comp_op='write_output'.\n"
         )
 
-
 def derive_resources(*, render_cfg: RenderConfig) -> RequiredResources:
     """
     Scans the configuration to identify all required resources
@@ -403,7 +407,7 @@ def derive_resources(*, render_cfg: RenderConfig) -> RequiredResources:
         surface_inputs=preq.surface_inputs, primary_surface=None, )
 
 
-def analyze_pipeline(ctx: Any) -> tuple[bool, str]:
+def analyze_pipeline(ctx: Any) -> tuple[bool, str, list]:
     """
     Performs a deep logical audit and generates a high-fidelity pipeline report.
 
@@ -425,71 +429,70 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str]:
     warnings = []
     step_with_warnings = set()
 
+    # HELPER: Get the exact string value from either an Enum or a String
+    def get_exact_val(item):
+        if hasattr(item, 'value'):
+            return item.value  # Returns "theme_overlay" from SurfaceKey.THEME_OVERLAY
+        return str(item)
+
     def add_warning(idx, msg):
         warnings.append(msg)
         if isinstance(idx, int):
             step_with_warnings.add(idx)
 
-    # 1. PRE-SCAN: Identify everything the pipeline PROMISES to produce
-    # This prevents transient surfaces from being flagged as "Missing from Library"
-    pipeline_produced_keys = {step.output_surface for step in pipeline if
-                              step.enabled and step.output_surface}
-    library_surface_keys = {s.driver_id for s in cfg.surfaces}
+
+    # 1. PRE-SCAN: Collect EXACT names from the Library (YAML)
+    # We use .name because that is the raw string from the YAML key
+    library_surface_names = {s.name for s in cfg.surfaces}
     library_factor_names = {f.name for f in cfg.factors}
 
-    # 2. SIMULATED STATE TRACKING
-    # Start with surfaces actually defined in the YAML library
-    sim_surfaces = set(library_surface_keys)
-    sim_buffers = set()
+    # Surfaces produced by enabled pipeline steps (exact strings)
+    pipeline_produced_names = {
+        get_exact_val(step.output_surface) for step in pipeline
+        if step.enabled and step.output_surface
+    }
+
+    # 2. SIMULATED STATE
+    sim_surfaces = set(library_surface_names)
     sim_factors = set(library_factor_names)
 
-    # B. Validate Pipeline Sequence
+    # 3. PIPELINE LOOP
     for i, step in enumerate(pipeline):
         if not step.enabled: continue
 
         # CHECK 1: Library Integrity
         if step.input_surfaces:
             for skey in step.input_surfaces:
-                # If it's not in the library AND not something the pipeline produces, it's truly
-                # missing
-                if skey not in library_surface_keys and skey not in pipeline_produced_keys:
-                    add_warning(
-                        i, f"❌ **Missing Surfaces Item:**  _{skey.value}_ is required but not "
-                           f"defined in YAML or produced by the pipeline."
-                    )
+                sname = get_exact_val(skey)
 
-        operator = COMPOSITING_REGISTRY.get(step.comp_op)
-        if operator is None:
-            add_warning(i, f"🔴 **Error:** Unknown operation `{step.comp_op}`.")
-            continue
-
-        # CHECK 2: Sequence Integrity (Does it exist YET?)
-        if step.input_surfaces:
-            for srf_key in step.input_surfaces:
-                if srf_key not in sim_surfaces:
+                # STRICT MATCH: No stripping underscores
+                if sname not in library_surface_names and sname not in pipeline_produced_names:
                     add_warning(
-                        i, f"⚠️ **Sequence Warning:** Surface `{srf_key.value}` used before it was "
-                           f"created."
+                        i, f"❌ **Missing Surface:** '{sname}' is required but not defined. "
+                           f"(Check for spelling or missing underscores in biome.yml)"
                     )
 
         # CHECK 3: Factor Dependency
-        if step.factor_nm and step.factor_nm not in sim_factors:
-            add_warning(
-                i, f"🔴 **Logic Error:** Factor `{step.factor_nm}` not defined in factors section."
-            )
+        if step.factor_nm:
+            fname = get_exact_val(step.factor_nm)
+            if fname not in sim_factors:
+                add_warning(
+                    i, f"🔴 **Logic Error:** Factor '{fname}' is not defined in the factors section."
+                )
+
+        # --- UPDATE SIMULATED STATE ---
+        if step.output_surface:
+            sim_surfaces.add(get_exact_val(step.output_surface))
 
         # CHECK 4: Buffer Integrity
         if "buffer" in operator.required_attrs and step.comp_op != "create_buffer":
-            if step.buffer not in sim_buffers:
+            if step.buffer not in sim_surfaces:
                 add_warning(i, f"🔴 **Buffer Error:** `{step.buffer}` has not been initialized.")
 
-        # --- UPDATE SIMULATED STATE ---
-        if step.comp_op == "create_buffer":
-            sim_buffers.add(step.buffer)
 
-        # If this step produces a surface, it is now available for subsequent steps
-        if step.output_surface:
-            sim_surfaces.add(step.output_surface)
+    # --- NOISE INTEGRITY CHECK ---
+    noise_errors = validate_noise_integrity(cfg)
+    warnings.extend(noise_errors)
 
     # --- 1. REPORT HEADER ---
     md.header("Thematic Render Pipeline Report", 1)
@@ -557,10 +560,12 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str]:
     # Physical Drivers
     md.header("Input Drivers", 3)
     md.tbl_hdr("Driver Key", "Halo", "Cleanup")
-    for dkey in sorted(list(ctx.eng_resources.drivers)):
+    for dkey in sorted(list(ctx.eng_resources.pool_map.keys())):
         ds = cfg.get_spec(dkey)
+        d_name = dkey.value if hasattr(dkey, 'value') else dkey
+
         cleanup = f"{ds.cleanup_type} ({ds.smoothing_radius}px)" if ds.cleanup_type else "Raw"
-        md.tbl_row(f"`{dkey.value}`", f"{ds.halo_px}px", cleanup)
+        md.tbl_row(f"`{d_name}`", f"{ds.halo_px}px", cleanup)
 
     # Explicit Theme Smoothing
     md.header("Thematic Smoothing Rules", 3)
@@ -600,8 +605,16 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str]:
     # Noise Profiles
     md.header("Procedural Noise Profiles", 3)
     md.tbl_hdr("ID", "Sigmas", "Weights", "Stretch")
-    for nid, nprof in ctx.eng_resources.noise_profiles.items():
-        md.tbl_row(f"`{nid}`", str(nprof.sigmas), str(nprof.weights), str(nprof.stretch))
+    if hasattr(cfg, 'noises') and cfg.noises:
+        for nid, nprof in cfg.noises.items():
+            # nprof is likely a NoiseProfile object or dict
+            sigmas = getattr(nprof, 'sigmas', 'N/A')
+            weights = getattr(nprof, 'weights', 'N/A')
+            stretch = getattr(nprof, 'stretch', 'N/A')
+
+            md.tbl_row(f"`{nid}`", str(sigmas), str(weights), str(stretch))
+    else:
+        md.text("*No noise profiles defined.*")
 
     # Themes ---
     md.header("Thematic Categories", 2)
@@ -634,7 +647,47 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str]:
         md.tbl_row(label, cat_id, opacity_desc, f"{amp * 100:.0f}%", blur, status)
 
     err_flag = len(warnings) > 0
-    return err_flag, md.render()
+    # Clean up the error strings for the plain-text 'message' field
+    # (Removes Markdown bold/italics for better readability in simple UI labels)
+    clean_errors = [
+        w.replace("**", "").replace("_", "").replace("`", "")
+        for w in warnings if "❌" in w or "🔴" in w or "⚠️" in w
+    ]
+    return err_flag, md.render(), clean_errors
+
+
+def validate_noise_integrity(render_cfg: Any) -> list[str]:
+    """Checks all cross-references to the noises library. Returns list of error strings."""
+    valid_noises = set(render_cfg.noises.keys()) if hasattr(render_cfg, 'noises') else set()
+    errors = []
+
+    # 1. Check Theme Categories -> Noise
+    theme_render = getattr(render_cfg, "theme_render", {}) or {}
+    categories = theme_render.get("categories", {})
+    for label, cat in categories.items():
+        n_id = cat.get("noise_id")
+        # Note: we ignore "none" or empty strings as they are valid 'no-noise' states
+        if n_id and n_id != "none" and n_id not in valid_noises:
+            errors.append(f"❌ **Theme Logic Error:** `{label}` references unknown noise_id `{n_id}`")
+
+    # 2. Check Surface Modifiers -> Noise
+    modifiers = getattr(render_cfg, "modifiers", {}) or {}
+    for mid, mprof in modifiers.items():
+        if mprof.noise_id and mprof.noise_id not in valid_noises:
+            errors.append(f"❌ **Modifier Error:** Profile `{mid}` references unknown noise_id `{mprof.noise_id}`")
+
+    # 3. Check Factor Engine -> Noise
+    factors = getattr(render_cfg, "factors", {}) or {}
+
+    for f in factors:
+        # Access attributes directly from the object
+        # (Assuming the object has .noise_id and .name)
+        n_id = getattr(f, "noise_id", None)
+
+        if n_id and n_id != "none" and n_id not in valid_noises:
+             f_name = getattr(f, "name", "Unknown Factor")
+             errors.append(f"❌ **Factor Logic Error:** Factor `{f_name}` references unknown noise_id `{n_id}`")
+    return errors
 
 
 def describe_lerp_parms(noise_amp, noise_atten_power, contrast, sensitivity, max_opacity) -> str:

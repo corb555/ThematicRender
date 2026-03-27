@@ -1,11 +1,3 @@
-import os
-
-# MUST BE AT THE VERY TOP, BEFORE ANY OTHER IMPORTS
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMBA_NUM_THREADS"] = "1"
 
 import argparse
 
@@ -59,6 +51,9 @@ def main():
     parser.add_argument("--col", type=float, help="Focal point X (0.0 to 1.0)")
 
     print("Thematic Render")
+    #  BETA WARNING
+    print("!  " + "NOTICE: THIS IS BETA SOFTWARE. DO NOT USE FOR PRODUCTION.".center(64) + "  !")
+    print("!  " + "Features and configuration will change without notice.".center(64) + "  !")
     args = parser.parse_args()
 
     # 1. Load and Resolve Config
@@ -76,7 +71,7 @@ def main():
         print(f"\n❌ Configuration Error: {e}")
         sys.exit(-1)"""
 
-    print(f"System Config File: {args.config}\n")
+    print(f"System Config File: {args.config}")
 
     # 2. Initialize Engine
     pipeline_eng = PipelineEngine(args.config)

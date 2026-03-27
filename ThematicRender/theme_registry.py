@@ -26,7 +26,7 @@ class ThemeRuntimeSpec:
     max_opacity: float = 1.0
     blur_px: float = 0.0
     noise_amp: float = 0.0
-    noise_id: str = "geology"
+    noise_id: str = "empty"
     contrast: float = 1.0
 
     smoothing_radius: float = 0.0
@@ -64,7 +64,8 @@ class ThemeRegistry:
         Args:
             cfg: Render configuration.
         """
-        self.cfg = cfg
+        self.cfg = None #cfg
+        self.brs_count = 0
 
         # QML-derived metadata.
         self._name_to_id: Dict[str, int] = {}
@@ -94,7 +95,7 @@ class ThemeRegistry:
         return self._runtime_specs_by_id
 
     def load_metadata(self, render_cfg: Any) -> None:
-
+        self.cfg = render_cfg
         qml_path = render_cfg.path("theme_qml")
         if not qml_path or not qml_path.exists():
             raise FileNotFoundError(f"Theme QML not found: {qml_path}")
@@ -128,6 +129,9 @@ class ThemeRegistry:
         ct = thr.get("categories")
 
         for label, cat_cfg in categories_cfg.items():
+            enabled = cat_cfg.get("enabled", True)
+            if not enabled: continue
+
             if label not in self._name_to_id:
                 raise ValueError(
                     f"Theme '{label}' is configured but not found in the QML palette."
@@ -148,38 +152,70 @@ class ThemeRegistry:
                 getattr(modifier, "shift_vector", (0.0, 0.0, 0.0))
             ) if modifier else (0.0, 0.0, 0.0)
 
-            spec = ThemeRuntimeSpec(
-                label=label,
-                theme_id=theme_id,
-                rgb=rgb,
-                max_opacity=float(cat_cfg.get("max_opacity", 1.0)),
-                blur_px=float(cat_cfg.get("blur_px", 0.0)),
-                noise_amp=float(cat_cfg.get("noise_amp", 0.0)),
-                noise_id=str(cat_cfg.get("noise_id", "geology")),
-                contrast=float(cat_cfg.get("contrast", 1.0)),
-                smoothing_radius=smoothing_radius,
-                surface_noise_id=surface_noise_id,
-                surface_intensity=surface_intensity,
-                surface_shift_vector=tuple(float(v) for v in surface_shift_vector),
-                enabled=bool(cat_cfg.get("enabled", True)),
-            )
+            try:
+                # Only default for safe params otherwise raise error
+                noise_amp = float(cat_cfg.get("noise_amp"))
+                if noise_amp != 0.0:
+                    noise_id = str(cat_cfg.get("noise_id"))
+                else:
+                    noise_id = "none"
+
+                spec = ThemeRuntimeSpec(
+                    label=label,
+                    theme_id=theme_id,
+                    rgb=rgb,
+                    max_opacity=float(cat_cfg.get("max_opacity")),
+                    blur_px=float(cat_cfg.get("blur_px", 0.0)),
+                    noise_amp=noise_amp,
+                    noise_id=noise_id,
+                    contrast=float(cat_cfg.get("contrast", 1.0)),
+                    smoothing_radius=smoothing_radius,
+                    surface_noise_id=surface_noise_id,
+                    surface_intensity=surface_intensity,
+                    surface_shift_vector=tuple(float(v) for v in surface_shift_vector),
+                    enabled=bool(enabled),
+                )
+            except MemoryError as e:
+                print(f"Config error for theme_render:categories:{label} - {e}")
+                raise ValueError(f"Config error for theme_render:categories:{label} - {e}")
 
             self._runtime_specs_by_label[label] = spec
             self._runtime_specs_by_id[theme_id] = spec
+            #self.brs_count += 1
+            """print(f"BUILD_RUNTIME SPECS {self.brs_count}")
+            if label == "volcanic":
+                print(
+                    f"DEBUG build runt '{label}' spec:",
+                    f"noise_amp={spec.noise_amp}, "
+                    f"contrast={spec.contrast}, "
+                    f"max_opacity={spec.max_opacity}, "
+                    f"noise_id={spec.noise_id}"
+                )"""
 
-    def _extract_theme_category_config(self, render_cfg: Any) -> Dict[str, Mapping[str, Any]]:
+# theme_registry.py
 
-        theme_render = getattr(render_cfg, "theme_render", None)
-        if theme_render and getattr(theme_render, "get", None):
+    def _extract_theme_category_config(self, render_cfg: Any) -> Dict[str, Any]:
+        """
+        Force the registry to look at the structured attributes
+        of the RenderConfig object first.
+        """
+        # 1. Check the structured attribute (Promoted by RenderConfig.load)
+        theme_render = getattr(render_cfg, "theme_render", {})
+        if theme_render:
             categories = theme_render.get("categories", {})
             if categories:
                 return dict(categories)
 
+        # 2. Fallback to the raw dict (Direct from YAML)
+        raw_defs = getattr(render_cfg, "raw_defs", {})
+        categories = raw_defs.get("theme_render", {}).get("categories")
+        if categories:
+            return categories
 
-        logic = getattr(render_cfg, "logic", {}) or {}
+        # 3. Final Fallback (The source of your 3-week stale data!)
+        # If theme_render isn't found, it uses 'logic', which hasn't changed.
         return {
-            label: params
-            for label, params in logic.items()
+            label: params for label, params in raw_defs.get("logic", {}).items()
             if label in self._name_to_id
         }
 
@@ -205,7 +241,6 @@ class ThemeRegistry:
         self.lut_rgb = lut
 
     def build_tile_context(self, theme_ids: np.ndarray) -> ThemeTileContext:
-
         present_ids = set(np.unique(theme_ids).tolist())
         active_specs: list[ThemeRuntimeSpec] = []
         masks_by_id: Dict[int, np.ndarray] = {}
@@ -255,9 +290,10 @@ class ThemeRegistry:
             if noise is None:
                 noise_provider = ctx.noises.get(spec.surface_noise_id)
                 if noise_provider is None:
+                    available = ctx.noises.keys()
                     raise KeyError(
                         f"Missing noise provider '{spec.surface_noise_id}' "
-                        f"for theme '{spec.label}'."
+                        f"for theme '{spec.label}'.  Available: {available}"
                     )
                 noise = np.squeeze(noise_provider.window_noise(ctx.window)).astype(np.float32)
                 noise_cache[spec.surface_noise_id] = noise
@@ -344,9 +380,12 @@ def refine_organic_signal_b(
     """
     Refine a theme mask using ThemeRuntimeSpec parameters.
         NOTE: A and B are identical except A uses the A pattern for passing parameters and
-    B uses the B pattern
+    B uses the B pattern for passing parameters
     """
     signal = mask.astype(np.float32)
+
+    #if spec.label == "volcanic":
+    #    print(f"ROSB {spec.label} amp={spec.noise_amp}")
 
     if spec.blur_px > 0.0:
         signal = gaussian_filter(signal, sigma=spec.blur_px)
@@ -354,8 +393,11 @@ def refine_organic_signal_b(
     if spec.noise_amp > 0.0:
         noise_provider = ctx.noises.get(spec.noise_id)
         if noise_provider is None:
+            available = ctx.noises.keys()
             raise KeyError(
-                f"Missing noise provider '{spec.noise_id}' for theme '{spec.label}'."
+                f"Missing noise provider for noise id '{spec.noise_id}' for theme '{spec.label}'. "
+                f"Ensure theme_render/categories/{spec.label} noise settings are valid.  Noise providers:"
+                f"{available}"
             )
 
         noise = np.squeeze(noise_provider.window_noise(ctx.window)).astype(np.float32)
@@ -367,6 +409,16 @@ def refine_organic_signal_b(
 
     if spec.contrast != 1.0:
         signal = np.power(signal, spec.contrast)
+
+    if spec.noise_id == 1:
+        print(
+            f"DEBUG refine_organic_signal_b {spec.label}: "
+            f"blur_px={spec.blur_px}, "
+            f"noise_amp={spec.noise_amp}, "
+            f"noise_id={spec.noise_id}, "
+            f"contrast={spec.contrast}, "
+            f"max_opacity={spec.max_opacity}"
+        )
 
     return np.clip(signal * spec.max_opacity, 0.0, 1.0)
 
@@ -391,10 +443,10 @@ def refine_organic_signal_a(mask, blur_px, noise_amp, noise_id, contrast, max_op
     # 2. SIGNAL SHAPING: Resolve the transition curve
     power_val = float(params.get("power_exponent", 0.0))
     if power_val > 0:
-        # SILKY PATH: Creates the 'Glint' look with long, smooth tails
+        # Smooth:  long, smooth tails
         signal = np.power(signal, 1.0 / max(power_val, 0.1))
     elif contrast != 1.0:
-        # CRISP PATH: Sharps the edge to create distinct mineral islands
+        # Crisp: Sharps the edge to create distinct mineral islands
         signal = np.clip((signal - 0.5) * contrast + 0.5, 0.0, 1.0)
 
     # 3. PROCEDURAL TEXTURE: Inject organic variation (Sand-Swept / Grain)
