@@ -1,9 +1,10 @@
 # Changelog
 
+- 1.7 [STABILITY] Refactored project into a Pipeline package, Render Package and a Common package.  
 - 1.6 [STABILITY] Better SHM partitioning and deterministic memory scaling.  Fixed parameter passing.
-- 1.5 [FEAT] High-fidelity theme smoothing and noise injection logic
+- 1.5 [FEAT] Added High-fidelity theme smoothing and noise injection logic
 - 1.4 [STABILITY] Hardened error handling and socket recovery
-- 1.3 [PERF] Transitioned to Client/Daemon architecture with Unix Domain Sockets
+- 1.3 [PERF] Transitioned to Client/Daemon architecture to allow persisted state and tile caches
 - 1.2 [STABILITY] Internal refactoring and resource cleanup
-- 1.1 [PERF] Parallelization via multiprocessing worker pools
+- 1.1 [PERF] Implemented multiprocessing worker pools
 - 1.0 [FEAT] Initial functional release
