@@ -3,6 +3,7 @@ from typing import Dict, Optional, Any, Mapping
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, binary_fill_holes, median_filter
+
 from Render.qml_palette import QmlPalette, _parse_color_attr
 
 MEDIAN_FILTER_SIZE = 3
@@ -174,14 +175,14 @@ class ThemeRegistry:
             self._runtime_specs_by_label[label] = spec
             self._runtime_specs_by_id[theme_id] = spec
             # self.brs_count += 1
-            if label == "playa":
+            """if label == "playa":
                 print(
                     f"DEBUG build runt '{label}' spec:",
                     f"noise_amp={spec.noise_amp}, "
                     f"contrast={spec.contrast}, "
                     f"max_opacity={spec.max_opacity}, "
                     f"noise_id={spec.noise_id}"
-                )
+                )"""
 
     # theme_registry.py
 
@@ -206,7 +207,7 @@ class ThemeRegistry:
         # 3. Final Fallback (The source of your 3-week stale data!)
         # If theme_render isn't found, it uses 'logic', which hasn't changed.
         return {label: params for label, params in raw_defs.get("logic", {}).items() if
-            label in self._name_to_id}
+                label in self._name_to_id}
 
     @staticmethod
     def _extract_smoothing_config(render_cfg: Any) -> Dict[str, Mapping[str, Any]]:
@@ -284,7 +285,7 @@ class ThemeRegistry:
             centered_noise = noise - 0.5
             shift = (centered_noise[..., np.newaxis] * np.asarray(
                 spec.surface_shift_vector, dtype=np.float32
-                ) * spec.surface_intensity)
+            ) * spec.surface_intensity)
             mask_3d = tile_ctx.masks_by_id[spec.theme_id][..., np.newaxis]
             rgb_float += shift * mask_3d
 

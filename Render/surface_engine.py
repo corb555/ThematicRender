@@ -5,13 +5,13 @@ from typing import Dict, Any, Optional, Iterable, Final
 import numpy as np
 from rasterio.windows import Window
 from scipy.interpolate import interp1d
+
+from Common.keys import RequiredResources, SurfaceKey, FileKey, DriverKey
 from Render.color_config import ColorConfig
 from Render.color_ramp_hsv import get_ramp_from_yml
-from Common.keys import RequiredResources, SurfaceKey, FileKey, DriverKey
 from Render.noise_library import NoiseLibrary
-from Pipeline.render_config import RenderConfig
-from Render.surface_library import SURFACE_PROVIDER_REGISTRY, MODIFIER_REGISTRY, \
-    SurfaceContext
+from Render.render_config import RenderConfig
+from Render.surface_library import SURFACE_PROVIDER_REGISTRY, MODIFIER_REGISTRY, SurfaceContext
 
 # surface_engine.py
 EXPECTED_BANDS = 3

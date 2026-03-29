@@ -4,10 +4,11 @@ from typing import Protocol, Callable, Mapping, Any, List
 
 import numpy as np
 from rasterio.windows import Window
-from Pipeline.render_config import RenderConfig
+
+from Render.factor_library import FACTOR_REGISTRY
+from Render.render_config import RenderConfig
 from Render.theme_registry import ThemeRegistry
 from Render.utils import print_once
-from Render.factor_library import FACTOR_REGISTRY
 
 
 # factor_engine.py
@@ -44,7 +45,6 @@ class FactorEngine:
 
     def update_render_context(self, render_cfg: 'RenderConfig', themes: 'ThemeRegistry'):
         """ re-binds the engine to the current job's state."""
-        # TODO Should this know about JOB STATE?????  Should this use CTX instead of local copy?
         self.cfg = render_cfg
         self.themes = themes
 

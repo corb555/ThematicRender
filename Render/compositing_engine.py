@@ -1,8 +1,9 @@
 from typing import Dict, List, Any, Optional
 
 import numpy as np
-from Render.compositing_library import COMPOSITING_REGISTRY
+
 from Common.keys import SurfaceKey, _BlendSpec
+from Render.compositing_library import COMPOSITING_REGISTRY
 
 
 # compositing_engine.py

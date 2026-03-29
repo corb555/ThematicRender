@@ -5,7 +5,7 @@ import socket
 from Common.ipc_packets import Envelope, Op
 
 
-def command_rcv_loop(socket_path: str, status_queue):
+def client_rcv_loop(socket_path: str, status_queue):
     """
     Dedicated thread for receiving, validating and forwarding commands from the Client.
     """

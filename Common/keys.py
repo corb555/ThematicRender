@@ -147,16 +147,19 @@ class RequiredResources:
     geography_hash: str = ""
     logic_hash: str = ""
     style_hash: str = ""
+    topology_hash: str = ""
+
 
     def with_hashes(
-            self, geography_hash: str, logic_hash: str, style_hash: str
+            self, geography_hash: str, hashes: dict
     ) -> 'RequiredResources':
         """
         Returns a copy of the resources with updated content hashes.
         Uses dataclasses.replace to handle the object update cleanly.
         """
         return replace(
-            self, geography_hash=geography_hash, logic_hash=logic_hash, style_hash=style_hash
+            self, geography_hash=geography_hash, logic_hash=hashes["logic"],
+            style_hash=hashes["style"], topology_hash=hashes["topology"]
         )
 
 

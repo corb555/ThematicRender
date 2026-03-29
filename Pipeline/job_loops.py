@@ -7,15 +7,13 @@ import setproctitle
 
 from Common.ipc_packets import WriterPacket, JobDonePacket, TileWrittenPacket, Op, Envelope, \
     ErrorPacket, send_error, BlockLoadedPacket, SEV_CANCEL, SEV_FATAL
-
 from Pipeline.engine_resources import JobContextStore
 from Pipeline.worker_context_base import (close_worker_ctx, sync_ctx_for_packet, )
 from Pipeline.worker_contexts import WriterContext, WorkerContext, ReaderContext
-
 from Render.task_routines import write_task, read_task, render_task, RenderWorkspace
 
 
-# render_task.py
+# job_loops.py
 
 
 def load_reader_job_ctx(job_id: str, shm_store: JobContextStore) -> ReaderContext:
@@ -29,7 +27,6 @@ def load_reader_job_ctx(job_id: str, shm_store: JobContextStore) -> ReaderContex
 
 
 def reader_loop(read_q, status_q, shm_name: str, pool_map) -> None:
-    """The 'Air-lock': Translates IPC messages into Rendering Tasks."""
     section = "READER"
     setproctitle.setproctitle(multiprocessing.current_process().name)
 
@@ -106,6 +103,7 @@ def load_worker_job_ctx(job_id: str, shm_store: JobContextStore) -> WorkerContex
         raise RuntimeError(
             f"[RENDER] Failed to load WorkerContext for job '{job_id}': {exc}"
         ) from exc
+
 
 def render_loop(work_q, writer_q, status_q, shm_name, out_pool, pool_map):
     setproctitle.setproctitle(multiprocessing.current_process().name)

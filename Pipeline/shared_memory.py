@@ -6,6 +6,7 @@ import uuid
 
 import numpy as np
 from rasterio.windows import Window
+
 from Common.ipc_packets import DriverBlockRef, WKR_TIMEOUT
 from Common.keys import DriverKey
 
@@ -357,8 +358,7 @@ class SlotRegistry:
 
         return {
             "mb_allocated": total_bytes / (1024 * 1024), "slots_used": used, "slots_total": total,
-            "hits": self.hits, "misses": self.misses, "transit_demands": self.transit_demands,
-            # New
+            "hits": self.hits, "misses": self.misses, "transit_demands": self.transit_demands, # New
             "is_cold": not self.is_warm_hit_detected
         }
 

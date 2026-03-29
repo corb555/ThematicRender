@@ -9,7 +9,7 @@ from typing import Optional
 from Common.ipc_packets import Envelope, Op
 
 
-class CommandProxy:
+class ClientProxy:
     """
     Dedicated networking class for the Unix socket.
 

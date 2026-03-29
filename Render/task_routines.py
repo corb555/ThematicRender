@@ -1,18 +1,17 @@
 from typing import Dict, Any, Tuple
 
 import numpy as np
+import rasterio
 from rasterio.windows import Window
 from scipy.ndimage import gaussian_filter
+
+from Common.ipc_packets import RenderPacket, WriterPacket, BlockReadPacket
+from Pipeline.worker_contexts import WorkerContext, WriterContext
 from Render.compositing_engine import CompositingEngine
 from Render.factor_engine import FactorEngine
-from Common.ipc_packets import RenderPacket
 from Render.noise_library import NoiseLibrary
 from Render.surface_engine import SurfaceEngine
-from Pipeline.worker_contexts import WorkerContext
-import rasterio
-from Common.ipc_packets import WriterPacket, BlockReadPacket
 from Render.utils import window_from_rect
-from Pipeline.worker_contexts import WriterContext
 
 
 def read_task(packet: BlockReadPacket, io_manager, data_buffer, mask_buffer):
@@ -50,6 +49,7 @@ def write_task(*, packet: WriterPacket, ctx: WriterContext, out_pool) -> None:
         # even if the disk write failed. This prevents pool exhaustion.
         if packet.out_ref:
             out_pool.release(packet.out_ref.slot_id)
+
 
 def render_task(*, packet, ctx, workspace, out_pool, pool_map):
     # EXTRACT DATA from SHM and set up the spatial compute window
@@ -121,23 +121,33 @@ class RenderWorkspace:
         self.current_geography_hash = None
         self.current_logic_hash = None
         self.current_style_hash = None
+        self.current_topology_hash = None
 
     def sync_to_context(self, ctx: WorkerContext):
         res = ctx.resources
         needs_style_sync = False
 
-        # 1. LOGIC/GEOGRAPHY
-        if res.logic_hash != self.current_logic_hash or self.current_logic_hash is None:
+        # 1. TOPOLOGY OR LOGIC CHANGED
+        # If the structure of the pipeline or the math logic changes,
+        # we must rebuild the FactorEngine.
+        if (res.topology_hash != self.current_topology_hash or
+            res.logic_hash != self.current_logic_hash or
+            self.current_logic_hash is None):
+
             noise_lib = NoiseLibrary(ctx.render_cfg, ctx.render_cfg.noises)
             noise_lib.attach_providers_shm()
 
             self.factor_eng = FactorEngine(
-                ctx.render_cfg, ctx.themes, noise_lib, ctx.render_cfg.factors, res, None
+                ctx.render_cfg, ctx.themes, noise_lib,
+                ctx.render_cfg.factors, res, None
             )
+            self.current_topology_hash = res.topology_hash
             self.current_logic_hash = res.logic_hash
-            needs_style_sync = True  # Force theme sync for new engine
+            needs_style_sync = True
 
-        # 2. STYLE
+        # 2. STYLE CHANGED
+        # If only the colors or theme parameters changed, we don't need
+        # to rebuild the FactorEngine, just the SurfaceEngine and LUTs.
         if res.style_hash != self.current_style_hash or self.current_style_hash is None:
             self.surface_eng = SurfaceEngine(ctx.render_cfg)
             self.current_style_hash = res.style_hash

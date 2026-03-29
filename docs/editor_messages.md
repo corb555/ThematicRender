@@ -6,10 +6,12 @@ This document defines the messaging requirements between the Editor and the Rast
 
 ## Goal
 
-The messaging system shall provide a simple, low-latency, local mechanism for the Editor to request raster renders from the 
+The messaging system shall provide a simple, low-latency, local mechanism for the Editor to request raster renders from
+the
 Daemon and receive status, completion, and error responses.
 
-The messaging design shall support an interactive workflow in which the user edits settings, saves them, requests a render, 
+The messaging design shall support an interactive workflow in which the user edits settings, saves them, requests a
+render,
 and sees the resulting raster displayed with minimal delay.
 
 ## Scope
@@ -32,13 +34,13 @@ the Editor and socket.AF_UNIX on the Daemon.
 The Daemon shall act as the server.
 The Editor shall act as the client.
 
-The transport shall be local-machine only. 
+The transport shall be local-machine only.
 
 The Daemon shall open the socket: /tmp/thematic_render.sock
 
 ## Message Model
 
-All messages exchanged between the Editor and the Daemon shall be small control messages. Raster image data shall not be 
+All messages exchanged between the Editor and the Daemon shall be small control messages. Raster image data shall not be
 sent over the messaging channel.
 
 The messaging channel shall be used for:
@@ -47,7 +49,7 @@ The messaging channel shall be used for:
 * progress or state updates
 * completion notifications
 * error notifications
-* optional cancel or shutdown commands 
+* optional cancel or shutdown commands
 
 ## Encoding and Framing
 
@@ -63,12 +65,12 @@ All messages will include a message type (msg)
 
 ## Connection Model
 
-The Editor shall establish a client connection to the Daemon when the View tab needs to issue or receive 
+The Editor shall establish a client connection to the Daemon when the View tab needs to issue or receive
 render-related messages.
 
 The Editor may keep the connection open across multiple requests.
 
-The Daemon shall be able to accept a connection from the Editor and remain available for repeated 
+The Daemon shall be able to accept a connection from the Editor and remain available for repeated
 request/response cycles.
 
 If the connection is lost, the Editor shall detect the disconnect and report that the Daemon is unavailable.
@@ -77,7 +79,7 @@ If the connection is lost, the Editor shall detect the disconnect and report tha
 
 The Editor shall send a render request message when the user clicks **Build**.
 
-The Daemon shall respond asynchronously. It is not required to complete the request before acknowledging receipt of 
+The Daemon shall respond asynchronously. It is not required to complete the request before acknowledging receipt of
 the message at the transport level.
 
 ## Request Identity
@@ -96,6 +98,7 @@ This requirement applies to:
 The `request_id` allows the Editor to match responses to the correct request and safely ignore stale messages.
 
 ### Terminal Response
+
 For each render request, the Daemon must eventually send exactly one terminal response:
 
 * `complete`
@@ -105,8 +108,8 @@ For each render request, the Daemon must eventually send exactly one terminal re
 Any message for that `request_id` sent after a Terminal Response will be discarded.
 
 ### Progress / Status
-Optional intermediate progress or state messages may be sent before the terminal response.
 
+Optional intermediate progress or state messages may be sent before the terminal response.
 
 ## Message Types
 
@@ -125,7 +128,8 @@ Minimum required parameters:
 * `build_dir`
 * `output_filename`
 
-Optional parameters may be added later, such as build directory or output file name, without changing the overall protocol shape.
+Optional parameters may be added later, such as build directory or output file name, without changing the overall
+protocol shape.
 
 Example:
 
@@ -198,7 +202,8 @@ The Editor shall:
 * send newline-delimited JSON requests
 * parse newline-delimited JSON responses
 * include a `request_id` in every render request
-* disable or otherwise guard the Build action while a request is active, unless overlapping requests are intentionally supported
+* disable or otherwise guard the Build action while a request is active, unless overlapping requests are intentionally
+  supported
 * treat `complete` and `error` as terminal states for the active request
 * ignore messages whose `request_id` does not match the active request
 * display an error if the Daemon cannot be reached
@@ -251,7 +256,8 @@ If the Editor cannot connect to the Daemon, it shall report the connection failu
 
 If the Daemon disconnects unexpectedly while a request is active, the Editor shall treat the request as failed.
 
-If the Daemon receives malformed JSON, it may close the connection or send an error response. The preferred behavior is to send an error response when the message boundary is intact and the request can still be identified.
+If the Daemon receives malformed JSON, it may close the connection or send an error response. The preferred behavior is
+to send an error response when the message boundary is intact and the request can still be identified.
 
 If either side receives an unknown message type, it shall treat that as a protocol error.
 
@@ -259,7 +265,8 @@ If either side receives an unknown message type, it shall treat that as a protoc
 
 The Editor should apply a reasonable timeout policy for detecting a lost or stalled Daemon connection.
 
-The timeout shall be long enough to allow valid renders to complete but short enough to detect a dead Daemon or broken connection.
+The timeout shall be long enough to allow valid renders to complete but short enough to detect a dead Daemon or broken
+connection.
 
 A timeout shall be treated as a failed request unless a progress policy explicitly resets the timeout window.
 
@@ -267,7 +274,7 @@ A timeout shall be treated as a failed request unless a progress policy explicit
 
 The initial protocol shall assume a single active render request at a time from the Editor.
 
-If the Editor sends a new `start_render` request while another is still active, the following policies shall be 
+If the Editor sends a new `start_render` request while another is still active, the following policies shall be
 implemented explicitly:
 
 * reject the new request with an error (Phase-1)
@@ -293,7 +300,8 @@ The messaging channel is intended for local communication between trusted proces
 
 No authentication or encryption is required for the initial implementation.
 
-The Daemon shall still validate message structure and required fields to avoid unsafe behavior caused by malformed input.
+The Daemon shall still validate message structure and required fields to avoid unsafe behavior caused by malformed
+input.
 
 ## Non-Functional Requirements
 
@@ -325,7 +333,7 @@ The protocol should be simple enough that both request and response messages can
   "message": "Rendering"
 }
 ```
- 
+
 ```json
 {
   "msg": "start_render",

@@ -1,7 +1,7 @@
 import argparse
 
 from Pipeline.pipeline_engine import PipelineEngine
-from Pipeline.render_config import RenderConfig
+from Render.render_config import RenderConfig
 
 
 # from ThematicRender.settings import BLEND_PIPELINE

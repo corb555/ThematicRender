@@ -7,9 +7,10 @@ import numpy as np
 # io_manager.py
 import rasterio
 from rasterio.windows import Window
+
 from Common.ipc_packets import DriverBlockRef, WKR_TIMEOUT
 from Common.keys import DriverKey, DriverRndrSpec
-from Pipeline.render_config import JobManifest
+from Pipeline.job_control import JobManifest
 from Pipeline.shared_memory import SlotRegistry
 
 

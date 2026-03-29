@@ -4,12 +4,13 @@ from typing import Iterable, Dict, List, Callable, Optional, TypeAlias, Tuple
 
 import rasterio
 from rasterio.windows import Window
+
+from Common.ipc_packets import (RenderPacket, DriverBlockRef, BlockReadPacket, WindowRect, Envelope, \
+                                Op)
+from Common.keys import DriverKey
 from Pipeline.engine_resources import EngineResources
 from Pipeline.io_manager import get_read_geometry
-from Common.ipc_packets import RenderPacket, DriverBlockRef, BlockReadPacket, WindowRect, \
-    Envelope, Op
-from Common.keys import DriverKey
-from Pipeline.render_config import JobManifest
+from Pipeline.job_control import JobManifest
 
 EnvelopeHandler: TypeAlias = Callable[[Envelope], None]
 
@@ -184,7 +185,7 @@ class TileDispatcher:
             self.unk_block_read += 1
             return None
 
-        #tile["read_duration"] += read_duration
+        # tile["read_duration"] += read_duration
         tile["pending_blocks"] -= 1
 
         if tile["pending_blocks"] < 0:

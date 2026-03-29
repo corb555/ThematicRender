@@ -2,17 +2,19 @@ from __future__ import annotations
 
 # config_mgr.py
 from dataclasses import dataclass
+import hashlib
+import json
 import operator
 from pathlib import Path
-from typing import (Any, Tuple, Iterable, Set, Dict, List, Optional)
+from typing import (Any, Tuple, Iterable, Set, Dict, List)
 
 import numpy as np
-from rasterio.windows import Window
-from Common.keys import DriverKey, FileKey, NoiseSpec, RequiredResources, _BlendSpec, \
-    SurfaceSpec, FactorSpec, PipelineRequirements, SurfaceModifierSpec, SurfaceKey, DriverRndrSpec
-from Pipeline.schema import RENDER_SCHEMA
-from Render.utils import DTYPE_ALIASES, GenMarkdown
 from YMLEditor.yaml_reader import ConfigLoader
+
+from Common.keys import DriverKey, FileKey, NoiseSpec, RequiredResources, _BlendSpec, SurfaceSpec, \
+    FactorSpec, PipelineRequirements, SurfaceModifierSpec, SurfaceKey, DriverRndrSpec
+from Render.schema import RENDER_SCHEMA
+from Render.utils import DTYPE_ALIASES, GenMarkdown
 
 
 # render_config.py
@@ -20,23 +22,6 @@ from YMLEditor.yaml_reader import ConfigLoader
 class RenderConfigError(ValueError):
     """Raised when the Render configuration is logically invalid or missing files."""
     pass
-
-
-@dataclass(slots=True)
-class JobManifest:
-    job_id: str
-    render_cfg: "RenderConfig"
-    resources: "RequiredResources"
-
-    final_out_path: Path
-    temp_out_path: Path
-
-    profile: dict
-    region_id: str
-    envelope: Optional[Window]
-    write_offset: Tuple[int, int]
-    render_params: Tuple[float, float, float]
-    driver_metadata: dict[DriverKey, dict[str, int]]
 
 
 @dataclass(slots=True)
@@ -264,6 +249,45 @@ class RenderConfig:
         """Access top-level project settings like 'seed'."""
         return self.raw_defs.get(key, default)
 
+    def get_hashes(self) -> Dict[str, str]:
+            """
+            Declarative hash generation.
+            Precedence: Top-level YAML sections override file-freshness checks.
+            """
+            hash_schema = {
+                "topology": ["pipeline", "drivers", "driver_specs"],
+                "logic":    ["factors", "factor_specs", "noise_profiles"],
+                "style":    ["surfaces", "theme_render", "surface_modifier_specs", "theme_qml"]
+            }
+
+            hashes = {}
+
+            for bucket, keys in hash_schema.items():
+                bucket_data = {}
+
+                for k in keys:
+                    # 1. PRECEDENCE: If the key is a top-level YAML section,
+                    # use the data directly and move to the next key.
+                    if k in self.raw_defs:
+                        bucket_data[k] = self.raw_defs[k]
+                        continue
+
+                    # TODO instead of implicit fallback, this should be explicit
+                    # 2. FALLBACK: If not in YAML, check if the key refers
+                    # to a physical file. If so, capture its modification time.
+                    file_path = self.path(k)
+                    if file_path and file_path.exists():
+                        bucket_data[f"{k}_mtime"] = file_path.stat().st_mtime
+
+                # Generate the final deterministic hash for this bucket
+                hashes[bucket] = self._generate_hash(bucket_data)
+
+            return hashes
+
+    @staticmethod
+    def _generate_hash(data: dict) -> str:
+        encoded = json.dumps(data, sort_keys=True).encode("utf-8")
+        return hashlib.md5(encoded).hexdigest()
 
 Slice2D = Tuple[slice, slice]
 
@@ -442,7 +466,7 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str, list]:
 
     # Surfaces produced by enabled pipeline steps (exact strings)
     pipeline_produced_names = {get_exact_val(step.output_surface) for step in pipeline if
-        step.enabled and step.output_surface}
+                               step.enabled and step.output_surface}
 
     # 2. SIMULATED STATE
     sim_surfaces = set(library_surface_names)
@@ -642,7 +666,7 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str, list]:
     # Clean up the error strings for the plain-text 'message' field
     # (Removes Markdown bold/italics for better readability in simple UI labels)
     clean_errors = [w.replace("**", "").replace("_", "").replace("`", "") for w in warnings if
-        "❌" in w or "🔴" in w or "⚠️" in w]
+                    "❌" in w or "🔴" in w or "⚠️" in w]
     return err_flag, md.render(), clean_errors
 
 
@@ -660,7 +684,7 @@ def validate_noise_integrity(render_cfg: Any) -> list[str]:
         if n_id and n_id != "none" and n_id not in valid_noises:
             errors.append(
                 f"❌ **Theme Logic Error:** `{label}` references unknown noise_id `{n_id}`"
-                )
+            )
 
     # 2. Check Surface Modifiers -> Noise
     modifiers = getattr(render_cfg, "modifiers", {}) or {}
@@ -669,7 +693,7 @@ def validate_noise_integrity(render_cfg: Any) -> list[str]:
             errors.append(
                 f"❌ **Modifier Error:** Profile `{mid}` references unknown noise_i"
                 f"d `{mprof.noise_id}`"
-                )
+            )
 
     # 3. Check Factor Engine -> Noise
     factors = getattr(render_cfg, "factors", {}) or {}
@@ -683,7 +707,7 @@ def validate_noise_integrity(render_cfg: Any) -> list[str]:
             f_name = getattr(f, "name", "Unknown Factor")
             errors.append(
                 f"❌ **Factor Logic Error:** Factor `{f_name}` references unknown noise_id `{n_id}`"
-                )
+            )
     return errors
 
 
@@ -731,22 +755,7 @@ def describe_lerp_parms(noise_amp, noise_atten_power, contrast, sensitivity, max
 
 
 def to_enum(key_cls, value):
-    """Converts YAML strings to their corresponding Enum values with helpful hints."""
     return value
-    if value is None:
-        return None
-    try:
-        # Enums lookup by value
-        return key_cls(value)
-    except ValueError:
-        # Extract all valid values from the Enum class
-        valid_options = [item.value for item in key_cls]
-
-        # Format the error message with the "Available" hint
-        raise ValueError(
-            f"❌ CONFIG ERROR: '{value}' is not a valid {key_cls.__name__}.\n"
-            f"👉 Available: {', '.join(map(str, valid_options))}"
-        ) from None  # 'from None' hides the original internal traceback for a cleaner CLI
 
 
 def _parse_dtype(v: Any, *, where: str) -> np.dtype:

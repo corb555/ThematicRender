@@ -1,10 +1,29 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
-# pipeline_engine.py
-from Pipeline.render_config import JobManifest
+from rasterio.windows import Window
+
+from Common.keys import DriverKey, RequiredResources
+from Render.render_config import RenderConfig
+
+
+@dataclass(slots=True)
+class JobManifest:
+    job_id: str
+    render_cfg: "RenderConfig"
+    resources: "RequiredResources"
+
+    final_out_path: Path
+    temp_out_path: Path
+
+    profile: dict
+    region_id: str
+    envelope: Optional[Window]
+    write_offset: Tuple[int, int]
+    render_params: Tuple[float, float, float]
+    driver_metadata: dict[DriverKey, dict[str, int]]
 
 
 @dataclass(slots=True)

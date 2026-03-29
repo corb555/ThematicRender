@@ -3,6 +3,7 @@ from enum import IntEnum
 from typing import Optional, Tuple, Dict, Any, TypeAlias
 
 import numpy as np
+
 from Common.keys import DriverKey
 
 # ipc_packets.py

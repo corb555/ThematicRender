@@ -4,13 +4,13 @@ import multiprocessing as mp
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
 from Common.ipc_packets import JOB_ID_IDLE
 from Pipeline.job_context import JobContextStore
-from Pipeline.rendering_loops import render_loop, reader_loop, writer_loop
-from Render.noise_library import NoiseLibrary
-
+from Pipeline.job_loops import render_loop, reader_loop, writer_loop
 from Pipeline.shared_memory import PoolSpec, SharedMemoryPool, SlotRegistry
 from Pipeline.system_config import SystemConfig
+from Render.noise_library import NoiseLibrary
 
 
 # engine_resources.py
@@ -92,7 +92,7 @@ class EngineResources:
 
     def _initialize_shm_pools(
             self, input_slots: int, num_renderers: int, num_readers: int, buffer_factor: float
-            ) -> None:
+    ) -> None:
         """
         Allocates physical SHM segments and calculates the Static/Transit partition.
         """
@@ -144,33 +144,33 @@ class EngineResources:
         print(f"   - Total Pool Size:  {input_slots:4} slots per driver ('system.yml:input_slots')")
         print(
             f"   - Transit Highway:  {transit_count:4} slots (Capacity for {buffer_factor}x load)"
-            )
+        )
         print(
             f"          - Load:             {load} ({num_renderers} Renderers × {num_drivers} "
             f"Drivers + {num_readers} Readers)"
-            )
+        )
         print(
             f"   - Static Cache:     {static_count:4} slots (Remaining slots pinned for Warm "
             f"Previews)\n"
-            )
+        )
         print(
             f"   - Output Highway:   {out_slots:4} slots (Write-buffer for {num_renderers} "
             f"Renderers @ {buffer_factor}x)"
-            )
+        )
         print(f"\n   💡 [Optimization Tips]:")
         if static_count < (input_slots * 0.2):
             print(f"   ⚠️  Warning: Static Cache is very small (<20%). Previews may be slow.")
             print(
                 f"      To fix: Increase 'input_slots' in system.yml to at least "
                 f"{transit_count + 100}."
-                )
+            )
         else:
             print(f"   ✅  Static Cache is healthy.")
 
         if transit_count < (num_renderers * num_drivers):
             print(
                 f"   🛑 Critical: Transit Highway is under-sized! Potential for pipeline deadlock."
-                )
+            )
             print(f"      To fix: Increase 'input_slots' or decrease 'transit_buffer_factor'.")
         else:
             print(f"   ✅  Transit Highway is healthy.")
@@ -178,7 +178,7 @@ class EngineResources:
         print(
             f"   - To change Transit Highway, adjust 'system.yml:transit_buffer_factor' (Current: "
             f"{buffer_factor})"
-            )
+        )
         print(f"   - Driver Count is sum of entries in driver_specs")
         print("-" * 60 + "\n")
 
@@ -207,7 +207,20 @@ class EngineResources:
     def set_engine_idle(self):
         """Sets the SHM state to -1 (Idle). Workers will release resources."""
         if self.ctx_store:
-            self.ctx_store.set_job_id(JOB_ID_IDLE)  # TODO add a generic setter
+            self.ctx_store.set_idle()
+
+    def set_engine_shutdown(self):
+        """Sets the SHM state to -1 (Idle). Workers will release resources."""
+        if self.ctx_store:
+            self.ctx_store.set_shutdown()
+
+    def sync_to_geography(self, region_id: str):
+        """
+        Purges SHM cache if the geographical region has changed.
+        """
+        if self.registry.context_id != region_id:
+            print(f"🔄 [System] Region change ({region_id[:8]}). Purging Slot Cache.")
+            self.registry.reset_context(region_id)
 
     def shutdown(self):
         print("[EngineResources] Initiating Graceful Shutdown...")

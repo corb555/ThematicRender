@@ -2,6 +2,7 @@ from functools import wraps
 from typing import Dict, Callable
 
 import numpy as np
+
 # factor_library.py
 from Render.spatial_math import normalize_step, lerp
 from Render.theme_registry import refine_organic_signal_a, refine_organic_signal_b

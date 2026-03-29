@@ -2,25 +2,25 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
-import json
 from pathlib import Path
 from queue import Empty
 import time
 import traceback
-from typing import List, Callable, Optional, TypeAlias,  Counter
+from typing import List, Callable, Optional, TypeAlias, Counter
 
 from rasterio.windows import Window
 
 from Common.ipc_packets import (Envelope, Op, JobDonePacket, ErrorPacket, BlockLoadedPacket, \
                                 TileWrittenPacket, SEV_WARNING, SEV_CANCEL, SEV_FATAL)
-from Pipeline.command_proxy import CommandProxy
+from Pipeline.client_proxy import ClientProxy
 from Pipeline.engine_resources import EngineResources
 from Pipeline.io_manager import IOManager, IOSystem
-from Pipeline.job_control import JobControl
-from Pipeline.render_config import derive_resources, JobManifest, RenderConfig
+from Pipeline.job_control import JobControl, JobManifest
 from Pipeline.render_stack import RenderStack
 from Pipeline.system_config import SystemConfig
 from Pipeline.tile_dispatcher import TileDispatcher, DispatchResult
+
+from Render.render_config import derive_resources, RenderConfig
 
 EnvelopeHandler: TypeAlias = Callable[[Envelope], None]
 
@@ -32,32 +32,38 @@ def dbg(msg, id):
 # pipeline_engine.py
 class PipelineEngine:
     def __init__(self, system_yml_path: Path):
-        self.proxy = None
+        self.client_proxy = None
+        resolver = JobResolver(config_loader=lambda p: RenderConfig.load(p))
+        render_stack = RenderStack()
         self.engine_cfg = SystemConfig.load_engine_specs(system_yml_path)
         self.eng_resources: EngineResources = EngineResources(self.engine_cfg)
+        io_system: IOSystem = IOSystem()
+        dispatcher = TileDispatcher(resources=self.eng_resources, max_in_flight=10)
 
-        self.io_system: IOSystem = IOSystem()
-        self.dispatcher = TileDispatcher(resources=self.eng_resources, max_in_flight=10)
         self.orchestrator = PipelineOrchestrator(
-            self.eng_resources, self.io_system, self.dispatcher
-        )
+                eng_resources=self.eng_resources,
+                io_system=io_system,
+                dispatcher=dispatcher,
+                resolver=resolver,
+                render_stack=render_stack
+            )
 
     def start(self):
         self.eng_resources.setup_engine()
-        self.proxy = CommandProxy(
+        self.client_proxy = ClientProxy(
             socket_path=self.engine_cfg.get("system.socket_path"),
             status_q=self.eng_resources.status_q, response_q=self.eng_resources.response_q
         )
-        self.proxy.start()
+        self.client_proxy.start()
         self.orchestrator.run_loop()
 
 
 class PipelineOrchestrator:
-    def __init__(self, eng_resources, io_system, dispatcher):
+    def __init__(self, eng_resources, io_system, dispatcher, resolver, render_stack):
         self.last_activity_ts = None
         self.eng_resources = eng_resources
-        self.resolver: JobResolver = JobResolver()
-        self.render_stack = RenderStack()
+        self.resolver = resolver
+        self.render_stack = render_stack
         self.io_system = io_system
         self.dispatcher = dispatcher
         self.stats = JobTelemetry()
@@ -138,7 +144,7 @@ class PipelineOrchestrator:
     def _initiate_emergency_shutdown(self, reason: str):
         """Emergency cleanup to prevent zombie processes and SHM leaks."""
         # 1. Set the Job ID to -3 (SHUTTING_DOWN)
-        self.eng_resources.status_store.set_job_id("-3")
+        self.eng_resources.ctx_store.set_shutdown()
 
         # 2. Send Poison Pills (N readers, N workers, 1 writer)
         # Follow the order: Reader -> Renderer -> Writer
@@ -170,23 +176,22 @@ class PipelineOrchestrator:
             job_manifest = self.resolver.create_job_manifest(json_job_req)
             job_id = job_manifest.job_id
 
-            # 2. VALIDATE SYSTEM RESOURCES (SHM Mapping)
-            # Ensure our physical SHM pools match what this render requires
+            # 2. VALIDATE SYSTEM RESOURCES
+            # Ensure our  pools match what this render requires
             needs_rebuild = False
-            if self.eng_resources:
-                required = set(job_manifest.resources.drivers.keys())
-                allocated = set(self.eng_resources.pool_map.keys())
-                if not required.issubset(allocated):
-                    print(f"🔄 [Orchestrator] SHM Mismatch. Rebuilding for: {required - allocated}")
-                    needs_rebuild = True
+            required = set(job_manifest.resources.drivers.keys())
+            allocated = set(self.eng_resources.pool_map.keys())
+            if not required.issubset(allocated):
+                print(f"🔄 [Orchestrator] Driver Mismatch. Rebuilding for: {required - allocated}")
+                needs_rebuild = True
 
-            # 3. HYDRATE ENGINES (Logic Boot)
+            self.eng_resources.sync_to_geography(job_manifest.region_id)
+
+            # 3. INIT RENDER ENGINES
             # Boot the render engines if they are cold or if drivers changed
             if needs_rebuild or self.render_stack.factor_eng is None:
-                self.render_stack.hydrate(
-                    job_manifest.render_cfg,
-                    job_manifest.resources,
-                    self.eng_resources
+                self.render_stack.init_render_engines(
+                    job_manifest.render_cfg, job_manifest.resources, self.eng_resources
                 )
 
             # 4. INITIALIZE OUTPUT FILE
@@ -199,10 +204,10 @@ class PipelineOrchestrator:
             if hasattr(self.eng_resources, 'registry'):
                 self.eng_resources.registry.start_session()
 
-            # 6. PREPARE CONTEXTS
+            # 6. PREPARE WORKER CONTEXTS
             # This handles engine syncing, cache purging, and context assembly
             reader_ctx, worker_ctx, writer_ctx = self.render_stack.prepare_job_contexts(
-                job_manifest, self.eng_resources
+                job_manifest
             )
 
             # 7. INITIALIZE JOB CONTROL
@@ -211,9 +216,7 @@ class PipelineOrchestrator:
 
             # 8. PUBLISH CONTEXT TO WORKERS
             self.eng_resources.update_context(
-                job_id=job_id,
-                reader_data=reader_ctx,
-                worker_data=worker_ctx,
+                job_id=job_id, reader_data=reader_ctx, worker_data=worker_ctx,
                 writer_data=writer_ctx
             )
 
@@ -227,8 +230,7 @@ class PipelineOrchestrator:
 
                 if result.render_packet:
                     self.send_to_worker(
-                        "work_q",
-                        Envelope(op=Op.RENDER_TILE, payload=result.render_packet)
+                        "work_q", Envelope(op=Op.RENDER_TILE, payload=result.render_packet)
                     )
 
             return True
@@ -237,15 +239,15 @@ class PipelineOrchestrator:
             traceback.print_exc()
             print(f"⚠️ [ORCHESTRATOR] Job '{job_id}' Failed to start: {e}")
 
-            self._send_to_client({
-                "msg": "error",
-                "job_id": job_id,
-                "severity": 1, # SEV_CANCEL
-                "message": f"⚠️ Job Initialization Failed: {str(e)}"
-            })
+            self._send_to_client(
+                {
+                    "msg": "error", "job_id": job_id, "severity": 1,  # SEV_CANCEL
+                    "message": f"⚠️ Job Initialization Failed: {str(e)}"
+                }
+            )
 
             self.job_control.clear_job()
-            self._start_next_job() # Attempt next job in queue
+            self._start_next_job()  # Attempt next job in queue
             return False
 
     def _handle_tiles_finalized(self, envelope: Envelope) -> None:
@@ -377,7 +379,8 @@ class PipelineOrchestrator:
             print(f"  💎 Status: OPTIMIZED BALANCE.")
             print(f"     The region fits entirely in the Static cache.")
 
-    def _generate_job_windows(self, manifest: JobManifest) -> List[Window]:
+    @staticmethod
+    def _generate_job_windows(manifest: JobManifest) -> List[Window]:
         """Calculates global windows using a uniform 256x256 grid."""
 
         if manifest.envelope is not None:
@@ -465,8 +468,9 @@ class PipelineOrchestrator:
         # 3. Logic cleanup
         self.job_control.clear_job()
 
-    def _handle_wr_abort(self, envelope: Envelope) -> None:
-        # TODO Implement 2.2
+    @staticmethod
+    def _handle_wr_abort(envelope: Envelope) -> None:
+        # TODO Implement error handling 2.2
         print(f"⚠️ [Orchestrator] Writer Abort not implemented: {envelope.op}")
 
     def valid_job_id(self, job_id):
@@ -627,12 +631,11 @@ class PipelineOrchestrator:
 
 
 class JobResolver:
-    """Resolve incoming job requests into fully validated render manifests."""
+    def __init__(self, config_loader: Callable[[Path], RenderConfig]):
+        self.config_loader = config_loader
 
     def create_job_manifest(self, json_request: dict) -> JobManifest:
         # 1. Extract parameters
-        # TODO  should system map client job_ids to internal job_ids?  Internal should be
-        #  monotonically increasing.
         job_id = json_request.get("job_id")
         if not job_id:
             raise ValueError("Job request is missing required 'job_id'")
@@ -644,10 +647,11 @@ class JobResolver:
         print("=" * 60)
         print(f"\n\nNEW JOB REQUEST - create_job_manifest for Job '{job_id}'")
 
-        # 2. Load and resolve render configuration
-        print("LOADING RENDER CONFIG")
+        # 2. Load and resolve job configuration
+        print("LOADING JOB CONFIG")
         try:
-            render_cfg = RenderConfig.load(config_path=config_path)
+            render_cfg = self.config_loader(config_path)
+
             render_cfg.resolve_paths(
                 prefix=params.get("prefix", ""),
                 build_dir=Path(params.get("build_dir", "build")).expanduser(),
@@ -656,34 +660,8 @@ class JobResolver:
         except Exception as e:
             raise ValueError(f"YAML Syntax or Path error: {str(e)}")
 
-        # 3. GENERATE HASHES for Hot-Reloading
-        # TODO - *** Audit whether this matches the config file!!!
-        # 1. Capture QML Freshness
-        qml_path = render_cfg.path("theme_qml")
-
-        # Get timestamp (0 if file is missing)
-        qml_mtime = qml_path.stat().st_mtime if qml_path and qml_path.exists() else 0
-
-        # 2. STYLE HASH
-        style_data = {
-            "surfaces": render_cfg.raw_defs.get("surfaces", {}),
-            "pipeline": render_cfg.raw_defs.get("pipeline", []),
-            "theme_smoothing": render_cfg.raw_defs.get("theme_smoothing_specs", {}),
-            "surface_modifier_specs": render_cfg.raw_defs.get("surface_modifier_specs", {}),
-            "qml_mtime": qml_mtime, "theme_render": render_cfg.raw_defs.get("theme_render", {}),
-        }
-
-        # LOGIC HASH: Representing Factor math, logic parameters, and driver specs
-        logic_data = {
-            "factors": render_cfg.raw_defs.get("factors", {}),
-            "factor_specs": render_cfg.raw_defs.get("factor_specs", {}),
-            "drivers": render_cfg.raw_defs.get("drivers", {}),
-            "driver_specs": render_cfg.raw_defs.get("driver_specs", {}),
-            "noise_profiles": render_cfg.raw_defs.get("noise_profiles", {})
-        }
-
-        style_hash = self.generate_content_hash(style_data)
-        logic_hash = self.generate_content_hash(logic_data)
+        # 3. GET HASHES - used to detect what part of config has changed
+        hashes = render_cfg.get_hashes()
 
         # 4. Resolve Resources and Geography
         resources = derive_resources(render_cfg=render_cfg)
@@ -693,7 +671,7 @@ class JobResolver:
         temp_out_path = self.build_temp_output_path(final_out_path, job_id)
         render_cfg.files["output"] = temp_out_path
 
-        # Metadata capture
+        # Setup preview parameters
         percent = float(params.get("percent", 0.0))
         row_focal = float(params.get("row", 0.0))
         col_focal = float(params.get("col", 0.0))
@@ -731,7 +709,8 @@ class JobResolver:
 
         # 5. Add hashes
         resources = resources.with_hashes(
-            geography_hash=geography_hash, logic_hash=logic_hash, style_hash=style_hash
+            geography_hash=geography_hash,
+            hashes=hashes
         )
 
         return JobManifest(
@@ -740,14 +719,6 @@ class JobResolver:
             region_id=geography_hash, envelope=envelope, write_offset=write_offset,
             render_params=(percent, row_focal, col_focal), driver_metadata=driver_metadata
         )
-
-    @staticmethod
-    def generate_content_hash(data: dict) -> str:
-        """Create a stable MD5 hash of a dictionary."""
-        # sort_keys=True is vital to ensure the same YAML content
-        # produces the same hash regardless of key order.
-        encoded = json.dumps(data, sort_keys=True).encode("utf-8")
-        return hashlib.md5(encoded).hexdigest()
 
     @staticmethod
     def build_temp_output_path(final_path: Path, job_id: str) -> Path:

@@ -2,10 +2,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Set, Optional
 
-from Pipeline.io_manager import IOManager
 from Common.keys import DriverKey
-from Pipeline.render_config import RenderConfig
+from Pipeline.io_manager import IOManager
 from Pipeline.worker_context_base import (WorkerContextBase, )
+from Render.render_config import RenderConfig
+
 
 # worker_contexts.py
 
@@ -47,9 +48,7 @@ class ReaderContext(WorkerContextBase):
         # 2. Instantiate the IOManager (Pure Science layer)
         # We use the config and paths that WERE pickled
         self._io = IOManager(
-            render_cfg=self.render_cfg,
-            drivers=self.source_paths,
-            anchor_key=self.anchor_key
+            render_cfg=self.render_cfg, drivers=self.source_paths, anchor_key=self.anchor_key
         )
 
         # 3. Physically open the Rasterio handles
@@ -66,6 +65,7 @@ class ReaderContext(WorkerContextBase):
             except Exception:
                 pass
             self._io = None
+
 
 @dataclass(slots=True)
 class WorkerContext:
@@ -115,8 +115,7 @@ class WriterContext(WorkerContextBase):
 
         # Guard against race conditions during cancellation
         if not self.output_path.exists():
-             raise FileNotFoundError(f"Writer cannot open missing file: {self.output_path}")
-
+            raise FileNotFoundError(f"Writer cannot open missing file: {self.output_path}")
 
         import rasterio
         try:
