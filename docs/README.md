@@ -5,6 +5,9 @@
 especially when working toward naturalistic, thematic, or presentation-quality maps. 
 
 It combines GIS-aligned raster inputs, computed control masks, procedural texture, and an ordered compositing pipeline to create results that are smoother, richer, and more visually intentional than conventional raster workflows. 
+![Sample LandWeaver render](https://raw.githubusercontent.com/corb555/LandWeaver/main/docs/images/sample_render.png)
+
+*Example output showing naturalized, artistically composited terrain generated from multiple GIS raster inputs.*
 
 ## Why It’s Useful
 
@@ -32,13 +35,9 @@ This structure keeps projects modular, repeatable, and easier to tune.
 * **Support for both analysis and presentation** — useful for analytical composites, thematic rendering, and high-end cartographic illustration
 * **Scales to large datasets** — designed for both fast previews and heavy regional rendering jobs 
 
-## In Short
-
-**Name** helps bridge the gap between GIS analysis and finished visual design. It gives analysts a more programmable rendering workflow and gives illustrators better tools for turning raw spatial data into maps that look intentional, clear, and visually rich. 
-
 ---
 
-## Key Features
+##  Features
 
 ### 1. Compositing Pipeline
 
