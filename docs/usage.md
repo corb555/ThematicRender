@@ -1,9 +1,9 @@
 
-# Thematic Rendering Usage
+# Land Weaver Usage
 
 ## Overview
 
-Thematic Rendering is a GIS-based rendering system for turning georeferenced raster inputs into a 
+Land Weaver is a GIS-based rendering system for turning georeferenced raster inputs into a 
 polished map surface.
 
 The system combines multiple GIS layers—such as elevation, 

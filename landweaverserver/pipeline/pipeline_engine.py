@@ -717,7 +717,7 @@ class PipelineOrchestrator:
                      f"engine configuration.\n"
                      f"Missing: {missing_sorted}\n"
                      f"To fix this, add the missing source(s) to 'engine_config.yml' under "
-                     f"'source_specs', then restart Thematic render.")
+                     f"'source_specs', then restart Land Weaver Server.")
         raise ValueError(f"⚠️ {error_msg}")
 
     def _verify_render_config(self, job_manifest) -> None:

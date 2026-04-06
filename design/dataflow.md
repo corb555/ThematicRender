@@ -1,4 +1,4 @@
-The **Thematic Rendering Daemon** is a high-performance background service for
+The **Land Weaver Server** is a high-performance background service for
 multi-layer spatial compositing. A separate client application manages render
 settings and notifies the daemon over a Unix domain socket whenever a new render
 is requested.

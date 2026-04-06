@@ -1,19 +1,16 @@
-# Thematic Render
-Absolutely — here’s a shorter version with the benefits made more explicit for a GIS analyst or illustrator. 
 
----
+# LandWeaver
 
-# Name
-
-**Name** is a programmable spatial compositing and synthesis system for turning raw GIS data into refined cartographic output. It is designed for users who want more control than standard GIS styling typically provides, especially when working toward naturalistic, thematic, or presentation-quality maps. 
+**LandWeaver** is a programmable spatial compositing and synthesis system for turning raw GIS data into refined cartographic output. It is designed for users who want more control than standard GIS styling typically provides, 
+especially when working toward naturalistic, thematic, or presentation-quality maps. 
 
 It combines GIS-aligned raster inputs, computed control masks, procedural texture, and an ordered compositing pipeline to create results that are smoother, richer, and more visually intentional than conventional raster workflows. 
 
 ## Why It’s Useful
 
-For a **GIS analyst**, **Name** provides a structured way to combine multiple spatial layers, shape environmental signals, and build reproducible rendering logic using text-based configuration rather than one-off manual styling. It supports both continuous data such as elevation, precipitation, forest density, and lithology, and categorical rasters such as LANDFIRE. 
+For a **GIS analyst**, **LandWeaver** provides a structured way to combine multiple spatial layers, shape environmental signals, and build reproducible rendering logic using text-based configuration rather than one-off manual styling. It supports both continuous data such as elevation, precipitation, forest density, and lithology, and categorical rasters such as LANDFIRE. 
 
-For an **illustrator or cartographer**, the main benefit is visual quality. **Name** helps reduce the blocky, stair-stepped appearance common in upscaled raster data and adds controlled texture, smoother transitions, and more natural surface variation. This makes it possible to produce maps that feel less mechanical and more polished. 
+For an **illustrator or cartographer**, the main benefit is visual quality. **LandWeaver** helps reduce the blocky, stair-stepped appearance common in upscaled raster data and adds controlled texture, smoother transitions, and more natural surface variation. This makes it possible to produce maps that feel less mechanical and more polished. 
 
 ## Core Model
 
@@ -40,9 +37,6 @@ This structure keeps projects modular, repeatable, and easier to tune.
 **Name** helps bridge the gap between GIS analysis and finished visual design. It gives analysts a more programmable rendering workflow and gives illustrators better tools for turning raw spatial data into maps that look intentional, clear, and visually rich. 
 
 ---
-
-I can also make this sound a bit more technical, or a bit more like product/marketing copy.
-
 
 ## Key Features
 
@@ -143,68 +137,6 @@ To ensure absolute stability when processing massive (50GB+) regional datasets:
 * IPC-ready buffer pools for a Reader/Worker/Writer architecture with zero-copy views.
 * Dual-mode execution: deterministic sequential runs for debugging, parallel runs for throughput.
 
-## Game Developers
-
-For a game developer, the output of **Thematic Render** is essentially a **"Procedural Master
-Texture"** that solves several major headaches in modern world-building.
-
-While standard GIS software produces maps for analysis, this engine produces **Assets**. Here is how a game
-developer can use the GeoTIFF output:
-
-### 1. "Clean" Albedo Maps (Base Color)
-
-Most satellite imagery (like Sentinel or Landsat) has baked-in shadows, atmospheric haze, and seasonal "noise."
-Game engines want **Albedo**—pure color without lighting information.
-
-* **The Benefit:** Because Thematic Render builds the color from the ground up using ramps and factors, the
-  output is a perfectly clean "Diffuse" map.
-* **The Result:** The developer can apply their own dynamic lighting and day/night cycles in-engine without
-  the map looking "dirty" or having pre-existing shadows that conflict with the game's sun.
-
-### 2. High-Fidelity Splat Maps (Weight Maps)
-
-Game engines use "Splat Maps" to tell the terrain shader where to paint grass, rock, or sand.
-
-* **The Usage:** Instead of outputting the final RGB image, a developer can use the **Factor Engine** to export
-  the individual masks (like `lith`, `canopy`, and `moisture`).
-* **The Benefit:** These aren't just noisy masks; they are **geometrically cleaned** (no stair-steps) and
-  **organically jittered**.
-* **Asset Placement:** The developer can feed the `canopy` factor into a "Procedural Foliage Volume" in Unreal
-  Engine. This ensures that 3D trees are only spawned exactly where the high-res canopy data says they should be.
-
-### 3. Integrated Topographic Detail
-
-The engine’s ability to "Melt and Claim" categorical data (Theme Smoothing) is vital for games.
-
-* **The Problem:** In many games, the transition from a forest to a lake is a hard, pixelated line.
-* **The Solution:** Thematic Render produces the "Transition Zone." The output TIFF contains soft, organic
-  "Shorelines" and "Ecotones."
-* **The Result:** A developer can import the GeoTIFF, and the "Shoreline Fade" we built for the water would
-  automatically look like wet, receding sand in the game engine's shader.
-
-### 4. World Partitioning and Scale
-
-Modern engines (Unreal Engine 5’s World Partition) work by breaking worlds into a grid of tiles.
-
-* **The Usage:** Because Thematic Render uses a **Tile-Based Engine Contract**, it can output a 50km x 50km
-  world in chunks that match the game engine's tile size perfectly.
-* **Accuracy:** The use of **Physical Meters (`elev_m`)** ensures that the texture perfectly aligns with the
-  Heightmap (DEM) being used to deform the terrain mesh. 1 pixel in the texture corresponds exactly to 1 meter in the
-  game world.
-
-### 5. The "Technical Bridge"
-
-1. **Render** the project using Thematic Render.
-2. **Export** as a standard 16-bit TIFF or PNG (using a simple `gdal_translate` or by adding a `.png` encoder
-   to our `write_task`).
-3. **Import** into a terrain tool like **World Machine**, **Gaea**, or directly into **Unreal Engine's Landscape
-   Mode**.
-
-### Summary
-
-Thematic Render allows a game developer to skip the "Manual Painting" phase of world-building. Instead of
-hand-painting where the red rocks are in Sedona, they feed in the real-world Lithology data, and the engine
-produces a **production-ready terrain texture** that looks like it was painted by a concept artist.
 
 ## Design
 

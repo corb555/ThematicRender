@@ -516,7 +516,7 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str, list]:
     warnings.extend(noise_errors)
 
     # --- REPORT GENERATION ---
-    md.header("Thematic render pipeline Report", 1)
+    md.header("Land Weaver Pipeline Report", 1)
     md.bullet(f"{md.bold('Anchor:')} `{get_exact_val(ctx.anchor_key)}` (Spatial Reference)")
 
     md.header(" Warnings & Errors", 2)
@@ -558,7 +558,7 @@ def analyze_pipeline(ctx: Any) -> tuple[bool, str, list]:
         md.tbl_row(f"`{nid}`", str(nprof.sigmas), str(nprof.weights))
 
     # Themes (Categorical Logic)
-    md.header("Thematic Categories", 2)
+    md.header("Land Weaver Categories", 2)
     md.tbl_hdr("Label", "ID", "Opacity", "Noise Amp", "Status")
 
     # categories live in theme_render

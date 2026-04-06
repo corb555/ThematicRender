@@ -26,7 +26,7 @@ def _validate_file_existence(cfg: RenderConfig):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Thematic render pipeline")
+    parser = argparse.ArgumentParser(description="Land Weaver Server")
 
     # Positional Arguments
     parser.add_argument("build_dir", help="Path prefix (e.g. 'build/Sedona')")
@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--row", type=float, help="Focal point Y (0.0 to 1.0)")
     parser.add_argument("--col", type=float, help="Focal point X (0.0 to 1.0)")
 
-    print("Thematic render")
+    print("Land Weaver Server")
     #  BETA WARNING
     print("!  " + "NOTICE: THIS IS BETA SOFTWARE. DO NOT USE FOR PRODUCTION.".center(64) + "  !")
     print("!  " + "Features and configuration will change without notice.".center(64) + "  !")

@@ -1,8 +1,7 @@
-Here is a concise summary for this new session with the technical context of the **Thematic Rendering Daemon**.
 
 ---
 
-## **Project Context: Thematic Rendering Daemon**
+## **Project Context: Land Weaver Server**
 
 A high-performance background service for multi-layer spatial compositing. It uses a **Client/Daemon** architecture over
 a Unix Domain Socket,
